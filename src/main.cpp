@@ -934,49 +934,70 @@ void printSeparator() {
 }
 
 void printGPSStatus() {
-  // Print current GPS time and TDMA mode status
+  // Always show GPS status line with raw values
   Serial.print("[GPS-TIME] ");
 
-  if (g_datetime_valid) {
-    // Print GPS date and time
+  // Show time values (mark as invalid if not synced)
+  if (gps.time.isValid() && gps.date.isValid()) {
     char timeStr[30];
-    snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d",
-             g_year, g_month, g_day, g_hour, g_minute, g_second);
+    snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d%s",
+             g_year, g_month, g_day, g_hour, g_minute, g_second,
+             g_datetime_valid ? "" : "?");
     Serial.print(timeStr);
+  } else if (gps.time.isValid()) {
+    // Only time available, no date
+    char timeStr[15];
+    snprintf(timeStr, sizeof(timeStr), "??-??-?? %02d:%02d:%02d?",
+             gps.time.hour(), gps.time.minute(), gps.time.second());
+    Serial.print(timeStr);
+  } else {
+    Serial.print("????-??-?? ??:??:??");
+  }
 
-    // Print TDMA mode
+  // Show satellite count
+  Serial.print(" | Sats:");
+  if (gps.satellites.isValid()) {
+    Serial.print(gps.satellites.value());
+  } else {
+    Serial.print("?");
+  }
+
+  // Show HDOP (horizontal dilution of precision) - lower is better
+  if (gps.hdop.isValid()) {
+    Serial.print(" | HDOP:");
+    Serial.print(gps.hdop.hdop(), 1);
+  }
+
+  // Show location (mark as invalid if not locked)
+  Serial.print(" | Pos:");
+  if (gps.location.isValid()) {
+    Serial.print(gps.location.lat(), 4);
+    Serial.print(",");
+    Serial.print(gps.location.lng(), 4);
+    if (!g_location_valid) {
+      Serial.print("?");
+    }
+  } else {
+    Serial.print("?.????,?.????");
+  }
+
+  // Show TDMA mode only when time is synced
+  if (g_datetime_valid) {
     String mode = tdmaScheduler.getDeviceMode();
-    Serial.print(" | Mode: ");
+    Serial.print(" | ");
     Serial.print(mode);
 
-    // Print time slot info
+    // Show next action based on mode
     if (mode == "TX_MODE") {
       TDMAStatus status = tdmaScheduler.getStatus();
-      Serial.print(" | Next TX@");
+      Serial.print("@");
       Serial.print(status.nextTransmissionSecond);
       Serial.print("s");
     } else if (mode == "RX_MODE") {
-      Serial.print(" | Listening");
-    } else if (mode == "TX_DONE") {
-      Serial.print(" | Waiting for next slot");
+      Serial.print("(Listen)");
     }
-
-    // Print GPS location if available
-    if (isLocationValid()) {
-      Serial.print(" | Pos: ");
-      Serial.print(getLatitude(), 4);
-      Serial.print(",");
-      Serial.print(getLongitude(), 4);
-    }
-
   } else {
-    Serial.print("Waiting for GPS fix...");
-
-    // Show satellite count if available
-    if (gps.satellites.isValid()) {
-      Serial.print(" | Satellites: ");
-      Serial.print(gps.satellites.value());
-    }
+    Serial.print(" | ACQUIRING_FIX");
   }
 
   Serial.println();
