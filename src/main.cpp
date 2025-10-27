@@ -2,11 +2,18 @@
  * ESP32 LoRa GPS-Timed TDMA Communication System
  * with Environmental Sensors and Hybrid Altimeter
  *
- * Features:
- * - GPS-synchronized TDMA for collision-free LoRa communication
+ * Required Components:
+ * - GPS (NEO-6M) - Required for time synchronization
+ * - LoRa (SX1262) - Required for communication
+ *
+ * Optional Components (will use dummy data if not detected):
  * - BMP180: Barometric pressure and temperature
  * - SHT30: Temperature and humidity
- * - GPS-calibrated hybrid altimeter
+ *
+ * Features:
+ * - GPS-synchronized TDMA for collision-free LoRa communication
+ * - Automatic dummy data when sensors not detected
+ * - GPS-calibrated hybrid altimeter (when BMP180 available)
  * - Real-time sensor data transmission
  */
 
@@ -144,6 +151,8 @@ void setup() {
   Serial.print(" (");
   Serial.print(DEVICE_NAME);
   Serial.println(")");
+  Serial.println("[INFO] Required: GPS + LoRa | Optional: BMP180, SHT30");
+  Serial.println("[INFO] System will use dummy data if sensors not detected");
   Serial.println();
 
   // Initialize OLED
@@ -163,11 +172,17 @@ void setup() {
   I2C_second.begin(SDA2_PIN, SCL2_PIN, 100000);
   Serial.println("✓ SUCCESS");
 
-  // Initialize BMP180
+  // Initialize BMP180 (optional)
   initBMP180();
+  if (!bmp180_ready) {
+    Serial.println("[WARNING] BMP180 not detected - will use dummy temperature/pressure/altitude");
+  }
 
-  // Initialize SHT30
+  // Initialize SHT30 (optional)
   initSHT30();
+  if (!sht30_ready) {
+    Serial.println("[WARNING] SHT30 not detected - will use dummy humidity data");
+  }
 
   // Initialize GPS on Serial2 (TX pin 46)
   Serial.print("[GPS] Initializing NEO-6M GPS module... ");
@@ -203,10 +218,21 @@ void setup() {
   lastSensorRead = millis();
   lastDisplaySwitch = millis();
 
+  // Print component status summary
+  Serial.println();
+  Serial.println("[SUMMARY] Active Components:");
+  Serial.print("  - GPS: INITIALIZED | LoRa: ");
+  Serial.println(isLoRaReady() ? "READY" : "FAILED");
+  Serial.print("  - BMP180: ");
+  Serial.print(bmp180_ready ? "ACTIVE" : "DUMMY DATA");
+  Serial.print(" | SHT30: ");
+  Serial.println(sht30_ready ? "ACTIVE" : "DUMMY DATA");
+  Serial.println("[READY] System operational - GPS + LoRa are sufficient for transmission");
+
   printSystemInfo();
   printSeparator();
-  Serial.println("[MAIN LOOP] Starting GPS-timed communication with sensors...");
-  Serial.println("[MODE] GPS-synchronized TDMA + Real-time sensor monitoring");
+  Serial.println("[MAIN LOOP] Starting GPS-timed communication...");
+  Serial.println("[MODE] GPS-synchronized TDMA + Real-time data transmission");
   Serial.println();
 }
 
@@ -451,24 +477,43 @@ String buildSensorPayload() {
   // Get GPS timestamp
   String gpsTimestamp = tdmaScheduler.getGPSTimestampString();
 
-  // Build sensor data string
-  String sensorData = "T:" + String(temperatureF, 1) + "F";
+  // Build sensor data string with real or dummy data
+  String sensorData = "";
 
+  // Temperature - use real if available, otherwise dummy
+  if (bmp180_ready) {
+    sensorData += "T:" + String(temperatureF, 1) + "F";
+  } else {
+    sensorData += "T:--.-F";  // Dummy temperature
+  }
+
+  // Humidity - use real if available, otherwise dummy
   if (sht30_ready) {
     sensorData += ",H:" + String(humidity, 1) + "%";
+  } else {
+    sensorData += ",H:--.-%";  // Dummy humidity
   }
 
+  // Pressure - use real if available, otherwise dummy
   if (bmp180_ready) {
     sensorData += ",P:" + String(pressurePa/100.0f, 1) + "hPa";
+  } else {
+    sensorData += ",P:---.-hPa";  // Dummy pressure
   }
 
+  // Altitude - use hybrid if available, otherwise dummy
   float altitude = getHybridAltitude();
   if (altitude != -999.0f) {
     sensorData += ",A:" + String(altitude, 1) + "m(" + getAltitudeSource() + ")";
+  } else {
+    sensorData += ",A:----.-m(---)";  // Dummy altitude
   }
 
+  // GPS coordinates - use real if available, otherwise dummy
   if (isLocationValid()) {
     sensorData += ",GPS:" + String(getLatitude(), 4) + "," + String(getLongitude(), 4);
+  } else {
+    sensorData += ",GPS:---.----,---.----";  // Dummy GPS coordinates
   }
 
   // Create complete message: "SENSOR_DATA [DEV1:#123@TIMESTAMP]"

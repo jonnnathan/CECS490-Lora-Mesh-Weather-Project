@@ -68,7 +68,7 @@ Two-way LoRa communication active. [DEV2:#1@2025-10-27 14:01:15]
 
 ### Device Setup
 
-To configure a device, edit the following constants in `LoraBidirectional.cpp`:
+To configure a device, edit the following constants in `main.cpp`:
 
 ```cpp
 const uint8_t DEVICE_ID = 1;        // Set to 1 for Device 1, 2 for Device 2
@@ -99,23 +99,43 @@ tdmaScheduler.setCustomMinutes(device3Minutes, 20);
 
 ## Hardware Requirements
 
-### GPS Module
+### Required Components
+
+#### GPS Module (REQUIRED)
 
 - **Model**: NEO-6M GPS Module
+- **Purpose**: Time synchronization for TDMA
 - **Connection**: Serial2 on ESP32
   - **TX Pin**: GPIO 46 (GPS TX → ESP32 RX)
   - **VCC**: 5V or 3.3V (depending on module)
   - **GND**: Ground
+- **Note**: System will not transmit without GPS time sync
 
-### LoRa Module
+#### LoRa Module (REQUIRED)
 
 - **Model**: SX1262 (Heltec WiFi Kit 32 V3 built-in)
+- **Purpose**: Wireless communication
 - **Frequency**: 915 MHz (adjust for your region)
 
-### Display
+### Optional Components
+
+The system will run with GPS + LoRa only and use dummy data for missing sensors.
+
+#### BMP180 Sensor (OPTIONAL)
+
+- **Purpose**: Temperature, pressure, and altitude
+- **If missing**: System sends `T:--.-F,P:---.-hPa,A:----.-m(---)`
+
+#### SHT30 Sensor (OPTIONAL)
+
+- **Purpose**: Humidity and temperature
+- **If missing**: System sends `H:--.-%`
+
+#### Display (OPTIONAL)
 
 - **Model**: OLED display (Heltec built-in)
-- Shows GPS time, TX/RX mode, and transmission status
+- **Purpose**: Shows GPS time, TX/RX mode, and transmission status
+- **If missing**: System continues, monitor via Serial
 
 ## Operation Modes
 
