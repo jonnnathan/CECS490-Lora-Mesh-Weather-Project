@@ -1,7 +1,10 @@
 #include "lora_comm.h"
 #include "OLED.h"
+#include "neo6m.h"
+#include "tdma_scheduler.h"
 
 OLED display;
+TDMAScheduler tdmaScheduler;
 
 // Device configuration - SET THIS DIFFERENTLY ON EACH DEVICE
 const uint8_t DEVICE_ID = 1; // Device 1 or Device 2
@@ -103,64 +106,90 @@ void setup() {
     Serial.println("[ERROR] LoRa initialization failed");
   }
 
+  // Initialize GPS on Serial2 (TX pin 46)
+  Serial.print("[GPS] Initializing NEO-6M GPS module... ");
+  Serial2.begin(9600, SERIAL_8N1, -1, 46); // RX=-1 (not used), TX=46
+  initGPS();
+  Serial.println("✓ SUCCESS");
+  Serial.println("[GPS] Waiting for GPS fix...");
+
+  // Initialize TDMA Scheduler
+  Serial.print("[TDMA] Initializing GPS-timed scheduler... ");
+  tdmaScheduler.init(DEVICE_ID, 4); // 4 transmissions per time slot
+  tdmaScheduler.setTransmissionSeconds(0, 15, 30, 45); // Transmit at 0, 15, 30, 45 seconds
+  Serial.println("✓ SUCCESS");
+
+  if (DEVICE_ID == 1) {
+    Serial.println("[TDMA] Device 1: Transmits on EVEN minutes (0, 2, 4, ..., 58)");
+  } else if (DEVICE_ID == 2) {
+    Serial.println("[TDMA] Device 2: Transmits on ODD minutes (1, 3, 5, ..., 59)");
+  }
+
   // Set initial timing
-  nextTx = millis() + (DEVICE_ID * 2500); // Stagger initial transmissions
   lastRxCheck = millis();
-  
-  Serial.print("[SCHEDULER] First transmission in ");
-  Serial.print((nextTx - millis()));
-  Serial.println(" ms");
-  
+
   printSeparator();
-  Serial.println("[MAIN LOOP] Starting two-way communication...");
-  Serial.println("[MODE] Transmit every 5s, Listen continuously");
+  Serial.println("[MAIN LOOP] Starting GPS-timed communication...");
+  Serial.println("[MODE] GPS-synchronized TDMA - 4 TX per assigned minute");
   Serial.println();
 }
 
 void loop() {
   unsigned long now = millis();
-  
-  // Check for incoming messages frequently
+
+  // Process GPS data
+  if (Serial2.available() > 0) {
+    processGPSData();
+  }
+
+  // Update TDMA scheduler with current GPS time
+  tdmaScheduler.update(g_hour, g_minute, g_second, g_datetime_valid);
+
+  // Check for incoming messages frequently (always listen)
   if (now - lastRxCheck >= RX_CHECK_INTERVAL) {
     checkForIncomingMessages();
     lastRxCheck = now;
   }
-  
-  // Transmit on schedule
-  if ((long)(now - nextTx) >= 0) {
-    Serial.print("[TX-SCHEDULE] Transmission #");
-    Serial.print(txSeq + 1);
-    Serial.println(" triggered");
-    
+
+  // GPS-synchronized transmission: Only transmit during assigned time slots
+  if (tdmaScheduler.shouldTransmitNow()) {
+    TDMAStatus status = tdmaScheduler.getStatus();
+
+    Serial.print("[TDMA-TX] Time slot active - Transmission ");
+    Serial.print(status.currentTransmissionIndex + 1);
+    Serial.print("/4 at ");
+    Serial.print(g_hour);
+    Serial.print(":");
+    if (g_minute < 10) Serial.print("0");
+    Serial.print(g_minute);
+    Serial.print(":");
+    if (g_second < 10) Serial.print("0");
+    Serial.println(g_second);
+
     bool success = transmitMessage();
     totalTxAttempts++;
-    
+
     if (success) {
       successfulTx++;
       currentDisplay = DISPLAY_SENDING;
       Serial.println("[TX-SUCCESS] Message transmitted successfully");
+      tdmaScheduler.markTransmissionComplete();
     } else {
       currentDisplay = DISPLAY_TX_FAILED;
       Serial.println("[TX-FAILED] Transmission failed");
     }
-    
+
     displayStateStart = now;
     updateDisplay();
-    
-    // Schedule next transmission
-    nextTx = now + TX_INTERVAL;
-    Serial.print("[SCHEDULER] Next transmission in ");
-    Serial.print(TX_INTERVAL);
-    Serial.println(" ms");
-    
+
     // Show stats every 10 transmissions
     if (totalTxAttempts % 10 == 0) {
       printTransceiverStats();
     }
-    
+
     Serial.println();
   }
-  
+
   // Update display based on state and timing
   if (currentDisplay != DISPLAY_WAITING) {
     if (now - displayStateStart >= DISPLAY_TIME) {
@@ -168,7 +197,7 @@ void loop() {
       updateDisplay();
     }
   }
-  
+
   delay(10); // Small delay to prevent overwhelming the loop
 }
 
@@ -180,45 +209,55 @@ bool transmitMessage() {
 
   txSeq++;
   String sentence = getNextSentence();
-  
-  // Create message format: "SENTENCE [DEV1:#123]"
-  char payload[120];
-  snprintf(payload, sizeof(payload), "%s [%s:#%lu]", sentence.c_str(), DEVICE_NAME, txSeq);
-  
+
+  // Get GPS timestamp from TDMA scheduler
+  String gpsTimestamp = tdmaScheduler.getGPSTimestampString();
+
+  // Create message format: "SENTENCE [DEV1:#123@2025-10-27 14:30:15]"
+  char payload[180];
+  snprintf(payload, sizeof(payload), "%s [%s:#%lu@%s]",
+           sentence.c_str(), DEVICE_NAME, txSeq, gpsTimestamp.c_str());
+
   lastSentMessage = String(payload);
-  
+
   Serial.println("┌─────────────────────────────────────────────────────────────┐");
   Serial.print("│ TRANSMITTING FROM ");
   Serial.print(DEVICE_NAME);
   Serial.print(" - MESSAGE #");
   Serial.print(txSeq);
-  
+
   int padding = 29 - String(txSeq).length();
   for(int i = 0; i < padding; i++) Serial.print(" ");
   Serial.println("│");
-  
+
+  Serial.print("│ GPS Time: ");
+  Serial.print(gpsTimestamp);
+  padding = 51 - gpsTimestamp.length();
+  for(int i = 0; i < padding; i++) Serial.print(" ");
+  Serial.println("│");
+
   Serial.print("│ Content: \"");
-  Serial.print(payload);
+  Serial.print(sentence);
   Serial.print("\"");
-  
-  int contentLen = 11 + String(payload).length() + 1;
+
+  int contentLen = 11 + sentence.length() + 1;
   if (contentLen < 65) {
     padding = 65 - contentLen;
     for(int i = 0; i < padding; i++) Serial.print(" ");
   }
   Serial.println("│");
-  
+
   Serial.print("│ Size: ");
   Serial.print(strlen(payload));
   Serial.print(" bytes");
-  
+
   String sizeStr = String(strlen(payload)) + " bytes";
   padding = 52 - sizeStr.length();
   for(int i = 0; i < padding; i++) Serial.print(" ");
   Serial.println("│");
-  
+
   Serial.println("└─────────────────────────────────────────────────────────────┘");
-  
+
   return sendMessage(String(payload));
 }
 
@@ -339,40 +378,62 @@ void handleReceivedMessage(const String& message, float rssi, float snr) {
 }
 
 bool parseReceivedMessage(const String& message, String& sentence, unsigned long& txCount, String& fromDevice) {
-  // Expected format: "Sentence text [DEV1:#123]" or "Sentence text [DEV2:#123]"
-  
+  // Expected format: "Sentence text [DEV1:#123@2025-10-27 14:30:15]"
+  // Also support old format: "Sentence text [DEV1:#123]"
+
   int bracketStart = message.lastIndexOf(" [");
   if (bracketStart == -1) return false;
-  
+
   int bracketEnd = message.indexOf(']', bracketStart);
   if (bracketEnd == -1) return false;
-  
+
   // Extract sentence
   sentence = message.substring(0, bracketStart);
   sentence.trim();
-  
-  // Extract device and count info
+
+  // Extract device, count, and timestamp info
   String bracketContent = message.substring(bracketStart + 2, bracketEnd); // Skip " ["
-  
+
   int colonPos = bracketContent.indexOf(":#");
   if (colonPos == -1) return false;
-  
+
   fromDevice = bracketContent.substring(0, colonPos);
-  String countStr = bracketContent.substring(colonPos + 2); // Skip ":#"
-  
+
+  // Check for GPS timestamp (format: #123@2025-10-27 14:30:15)
+  String afterColon = bracketContent.substring(colonPos + 2); // Skip ":#"
+  int atPos = afterColon.indexOf('@');
+
+  String countStr;
+  String gpsTimestamp = "";
+
+  if (atPos != -1) {
+    // New format with GPS timestamp
+    countStr = afterColon.substring(0, atPos);
+    gpsTimestamp = afterColon.substring(atPos + 1);
+  } else {
+    // Old format without GPS timestamp
+    countStr = afterColon;
+  }
+
   txCount = countStr.toInt();
-  
+
   // Validate
   if (sentence.length() == 0 || fromDevice.length() == 0 || (txCount == 0 && countStr != "0")) {
     return false;
   }
-  
+
   // Don't process our own messages
   if (fromDevice == DEVICE_NAME) {
     Serial.println("[RX-FILTER] Ignoring our own transmission");
     return false;
   }
-  
+
+  // Log GPS timestamp if present
+  if (gpsTimestamp.length() > 0) {
+    Serial.print("[RX-GPS] Message timestamp: ");
+    Serial.println(gpsTimestamp);
+  }
+
   return true;
 }
 
@@ -397,35 +458,67 @@ String getNextSentence() {
 
 void updateDisplay() {
   display.clearDisplay();
-  
+
   switch (currentDisplay) {
-    case DISPLAY_WAITING:
-      display.drawString(0, 0, String(DEVICE_NAME) + " Ready");
-      display.drawString(0, 10, "TX:" + String(txSeq) + " RX:" + String(rxCount));
-      if (totalRxMessages > 0) {
-        float successRate = (float)validRxMessages / totalRxMessages * 100.0;
-        display.drawString(0, 20, "RX Rate:" + String(successRate, 0) + "%");
+    case DISPLAY_WAITING: {
+      // Show GPS time on first line
+      if (g_datetime_valid) {
+        char timeStr[20];
+        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d %s",
+                 g_hour, g_minute, g_second,
+                 tdmaScheduler.getDeviceMode().c_str());
+        display.drawString(0, 0, String(timeStr));
+      } else {
+        display.drawString(0, 0, String(DEVICE_NAME) + " GPS?");
       }
+
+      // Show TX/RX counts
+      display.drawString(0, 10, "TX:" + String(txSeq) + " RX:" + String(rxCount));
+
+      // Show TDMA mode on third line
+      String mode = tdmaScheduler.getDeviceMode();
+      if (mode == "TX_MODE") {
+        TDMAStatus status = tdmaScheduler.getStatus();
+        int nextSec = status.nextTransmissionSecond;
+        display.drawString(0, 20, "TX@" + String(nextSec) + "s");
+      } else if (mode == "RX_MODE") {
+        display.drawString(0, 20, "RX Mode");
+      } else if (mode == "TX_DONE") {
+        display.drawString(0, 20, "TX Complete");
+      } else {
+        display.drawString(0, 20, "Wait GPS");
+      }
+
+      // Show success rate
       if (totalTxAttempts > 0) {
         float txSuccessRate = (float)successfulTx / totalTxAttempts * 100.0;
-        display.drawString(0, 30, "TX Rate:" + String(txSuccessRate, 0) + "%");
+        display.drawString(0, 30, "Rate:" + String(txSuccessRate, 0) + "%");
       }
       break;
-      
-    case DISPLAY_SENDING:
+    }
+
+    case DISPLAY_SENDING: {
       display.drawString(0, 0, "Sending...");
       display.drawString(0, 10, "TX #" + String(txSeq));
-      display.drawString(0, 20, "To: ALL");
+      if (g_datetime_valid) {
+        char timeStr[12];
+        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d",
+                 g_hour, g_minute, g_second);
+        display.drawString(0, 20, String(timeStr));
+      } else {
+        display.drawString(0, 20, "To: ALL");
+      }
       display.drawString(0, 30, "Size:" + String(lastSentMessage.length()) + "b");
       break;
-      
+    }
+
     case DISPLAY_RECEIVED_MSG:
       display.drawString(0, 0, "Received!");
       display.drawString(0, 10, "From: " + String(lastReceivedMessage.indexOf("DEV1") > 0 ? "DEV1" : "DEV2"));
       display.drawString(0, 20, "RX #" + String(rxCount));
       display.drawString(0, 30, "TX #" + String(lastRxTxCount));
       break;
-      
+
     case DISPLAY_TX_FAILED:
       display.drawString(0, 0, "TX Failed!");
       display.drawString(0, 10, "Check radio");
@@ -433,33 +526,39 @@ void updateDisplay() {
       display.drawString(0, 30, "Retrying...");
       break;
   }
-  
+
   display.updateDisplay();
 }
 
 void printSystemInfo() {
   Serial.println();
   Serial.println("┌─────────────────────────────────────────────────────────────┐");
-  Serial.println("│                    TWO-WAY SYSTEM INFO                     │");
+  Serial.println("│                 GPS-TIMED SYSTEM INFO                      │");
   Serial.println("├─────────────────────────────────────────────────────────────┤");
   Serial.print("│ Device: ");
   Serial.print(DEVICE_NAME);
   Serial.print(" (ID: ");
   Serial.print(DEVICE_ID);
   Serial.print(")");
-  
+
   String deviceInfo = String(DEVICE_NAME) + " (ID: " + String(DEVICE_ID) + ")";
   int padding = 48 - deviceInfo.length();
   for(int i = 0; i < padding; i++) Serial.print(" ");
   Serial.println("│");
-  
-  Serial.print("│ TX Interval: ");
-  Serial.print(TX_INTERVAL);
-  Serial.println(" ms                                   │");
+
   Serial.print("│ RX Check: ");
   Serial.print(RX_CHECK_INTERVAL);
   Serial.println(" ms                                     │");
-  Serial.println("│ Mode: Two-way Transceiver                              │");
+  Serial.println("│ Mode: GPS-Synchronized TDMA                            │");
+  Serial.println("│ TX Schedule: 4 transmissions per assigned minute       │");
+  Serial.println("│ TX Seconds: 0, 15, 30, 45                              │");
+
+  if (DEVICE_ID == 1) {
+    Serial.println("│ Time Slots: EVEN minutes (0, 2, 4, ..., 58)            │");
+  } else if (DEVICE_ID == 2) {
+    Serial.println("│ Time Slots: ODD minutes (1, 3, 5, ..., 59)             │");
+  }
+
   Serial.println("└─────────────────────────────────────────────────────────────┘");
   Serial.println();
 }
