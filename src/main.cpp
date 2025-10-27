@@ -103,6 +103,10 @@ unsigned long displayStateStart = 0;
 unsigned long lastDisplaySwitch = 0;
 const unsigned long AUTO_DISPLAY_SWITCH = 5000; // Auto-switch display every 5s
 
+// GPS time monitoring
+unsigned long lastGPSStatusPrint = 0;
+const unsigned long GPS_STATUS_INTERVAL = 2000; // Print GPS status every 2 seconds
+
 // ==================== FUNCTION PROTOTYPES ====================
 // Sensor functions
 void initBMP180();
@@ -131,6 +135,7 @@ void displayLoRaStatus();
 void printSystemInfo();
 void printTransceiverStats();
 void printSeparator();
+void printGPSStatus();
 
 // ==================== SETUP ====================
 void setup() {
@@ -217,6 +222,7 @@ void setup() {
   lastRxCheck = millis();
   lastSensorRead = millis();
   lastDisplaySwitch = millis();
+  lastGPSStatusPrint = millis();
 
   // Print component status summary
   Serial.println();
@@ -254,6 +260,12 @@ void loop() {
     readSHT30Data();
     updateHybridAltimeter();
     lastSensorRead = now;
+  }
+
+  // Print GPS status periodically
+  if (now - lastGPSStatusPrint >= GPS_STATUS_INTERVAL) {
+    printGPSStatus();
+    lastGPSStatusPrint = now;
   }
 
   // Check for incoming messages frequently (always listen)
@@ -919,4 +931,53 @@ void printTransceiverStats() {
 
 void printSeparator() {
   Serial.println("===============================================================");
+}
+
+void printGPSStatus() {
+  // Print current GPS time and TDMA mode status
+  Serial.print("[GPS-TIME] ");
+
+  if (g_datetime_valid) {
+    // Print GPS date and time
+    char timeStr[30];
+    snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d",
+             g_year, g_month, g_day, g_hour, g_minute, g_second);
+    Serial.print(timeStr);
+
+    // Print TDMA mode
+    String mode = tdmaScheduler.getDeviceMode();
+    Serial.print(" | Mode: ");
+    Serial.print(mode);
+
+    // Print time slot info
+    if (mode == "TX_MODE") {
+      TDMAStatus status = tdmaScheduler.getStatus();
+      Serial.print(" | Next TX@");
+      Serial.print(status.nextTransmissionSecond);
+      Serial.print("s");
+    } else if (mode == "RX_MODE") {
+      Serial.print(" | Listening");
+    } else if (mode == "TX_DONE") {
+      Serial.print(" | Waiting for next slot");
+    }
+
+    // Print GPS location if available
+    if (isLocationValid()) {
+      Serial.print(" | Pos: ");
+      Serial.print(getLatitude(), 4);
+      Serial.print(",");
+      Serial.print(getLongitude(), 4);
+    }
+
+  } else {
+    Serial.print("Waiting for GPS fix...");
+
+    // Show satellite count if available
+    if (gps.satellites.isValid()) {
+      Serial.print(" | Satellites: ");
+      Serial.print(gps.satellites.value());
+    }
+  }
+
+  Serial.println();
 }
