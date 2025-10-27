@@ -189,9 +189,11 @@ void setup() {
     Serial.println("[WARNING] SHT30 not detected - will use dummy humidity data");
   }
 
-  // Initialize GPS on Serial2 (TX pin 46)
+  // Initialize GPS on Serial2 (RX pin 46)
+  // GPS TX connects to ESP32 RX (GPIO 46)
+  // GPS RX not used (we don't send commands to GPS)
   Serial.print("[GPS] Initializing NEO-6M GPS module... ");
-  Serial2.begin(9600, SERIAL_8N1, -1, 46); // RX=-1 (not used), TX=46
+  Serial2.begin(9600, SERIAL_8N1, 46, -1); // RX=46 (GPS TX->ESP32 RX), TX=-1 (not used)
   initGPS();
   Serial.println("✓ SUCCESS");
   Serial.println("[GPS] Waiting for GPS fix...");
@@ -246,10 +248,8 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // Process GPS data
-  if (Serial2.available() > 0) {
-    processGPSData();
-  }
+  // Process GPS data continuously (processGPSData handles checking Serial2.available internally)
+  processGPSData();
 
   // Update TDMA scheduler with current GPS time
   tdmaScheduler.update(g_hour, g_minute, g_second, g_datetime_valid);
