@@ -2,28 +2,36 @@
 #define TDMA_SCHEDULER_H
 
 #include <Arduino.h>
+#include "network_time.h"
 
-// TDMA Configuration
-// Each device gets assigned specific minutes within an hour to transmit
-// For example: Device 1 transmits on even minutes (0, 2, 4, ..., 58)
-//              Device 2 transmits on odd minutes (1, 3, 5, ..., 59)
+// ==================== TDMA CONFIGURATION ====================
+// Five-node schedule with 12-second slots inside a 60-second minute.
+// Each node owns a 12-second window (10s TX + 2s guard).
+
+// Slot timing (seconds within each minute):
+//   Node 1: 0-11   (TX at 6)
+//   Node 2: 12-23  (TX at 18)
+//   Node 3: 24-35  (TX at 30)
+//   Node 4: 36-47  (TX at 42)
+//   Node 5: 48-59  (TX at 54)
 
 struct TDMAConfig {
-    uint8_t deviceId;                    // Device identifier (1, 2, 3, etc.)
-    uint8_t transmissionsPerSlot;        // Number of transmissions per time slot (default: 4)
-    uint8_t transmissionSeconds[4];      // Seconds within the minute to transmit (e.g., 0, 15, 30, 45)
-    bool useAlternatingMinutes;          // If true, uses even/odd minute allocation
-    uint8_t customMinutes[60];           // Custom minute allocation (1 = transmit, 0 = receive)
-    uint8_t customMinuteCount;           // Number of custom minutes allocated
+    uint8_t deviceId;                    // Device identifier (1-5)
+    uint8_t transmissionsPerSlot;        // Number of transmissions per slot (default: 1)
+    uint8_t transmissionOffset;          // Offset from slot start in seconds (e.g., 6)
 };
 
 struct TDMAStatus {
-    bool isMyTimeSlot;                   // Current minute belongs to this device
+    bool isMyTimeSlot;                   // Current second falls within this device's slot
     bool shouldTransmit;                 // Device should transmit now
-    uint8_t currentTransmissionIndex;    // Which transmission in the slot (0-3)
-    uint8_t nextTransmissionSecond;      // Next scheduled transmission second
-    bool gpsTimeSynced;                  // GPS time is valid and synced
-    unsigned long lastTransmitTime;      // Last successful transmission timestamp
+    uint8_t currentTransmissionIndex;    // Which transmission in the slot (always 0 now)
+    uint8_t nextTransmissionSecond;      // Next scheduled transmission second (absolute)
+    uint8_t slotStartSecond;             // When this node's slot starts
+    uint8_t slotEndSecond;               // When this node's slot ends
+    bool gpsTimeSynced;                  // GPS time is valid and synced (legacy compatibility)
+    bool timeSynced;                     // Time is synced (GPS or network) - NEW
+    TimeSource timeSource;               // Current time source (GPS, NETWORK, NONE) - NEW
+    unsigned long lastTransmitTime;      // Last successful transmission timestamp (millis)
 };
 
 struct GPSTimestamp {
@@ -41,22 +49,30 @@ class TDMAScheduler {
 public:
     TDMAScheduler();
 
-    // Initialize with device configuration
-    void init(uint8_t deviceId, uint8_t transmissionsPerSlot = 4);
+    // TDMA timing constants - 5 nodes, 12 seconds each
+    static constexpr uint8_t MAX_NODES = 5;
+    static constexpr uint8_t SLOT_DURATION_SEC = 12;    // 60s / 5 nodes = 12s per node
+    static constexpr uint8_t TX_WINDOW_SEC = 10;        // Active transmit window (with 2s guard)
+    static constexpr uint8_t TX_PER_SLOT = 1;           // One transmission per window
+    static constexpr uint8_t DEFAULT_TX_OFFSET = 6;     // TX at middle of slot (6 seconds in)
 
-    // Set custom transmission seconds within a minute
-    void setTransmissionSeconds(uint8_t sec1, uint8_t sec2, uint8_t sec3, uint8_t sec4);
+    // Initialize with device ID (1-5)
+    void init(uint8_t deviceId);
 
-    // Set custom minute allocation (for more than 2 devices)
-    void setCustomMinutes(const uint8_t* minutes, uint8_t count);
+    // Set custom transmission offset within slot (default: 6)
+    void setTransmissionOffset(uint8_t offset);
 
-    // Update scheduler with current GPS time
+    // Update scheduler with current GPS time (legacy method)
     void update(int gpsHour, int gpsMinute, int gpsSecond, bool gpsValid);
+
+    // Update scheduler with automatic time source selection (GPS or Network fallback)
+    // Returns the time source that was used
+    TimeSource updateWithFallback(int gpsHour, int gpsMinute, int gpsSecond, bool gpsValid);
 
     // Check if device should transmit now
     bool shouldTransmitNow();
 
-    // Check if current minute is this device's time slot
+    // Check if current second is within this device's slot
     bool isMyTimeSlot();
 
     // Get current TDMA status
@@ -68,7 +84,7 @@ public:
     // Get timestamp structure
     GPSTimestamp getGPSTimestamp();
 
-    // Reset transmission tracking for new time slot
+    // Reset transmission tracking for new slot
     void resetSlot();
 
     // Mark transmission as complete
@@ -77,22 +93,31 @@ public:
     // Get time until next transmission (in seconds)
     int getTimeUntilNextTransmission();
 
-    // Get device mode (TX or RX)
+    // Get device mode string (TX_MODE, RX_MODE, WAIT_GPS)
     String getDeviceMode();
+
+    // Get configured transmissions per slot
+    uint8_t getTransmissionsPerSlot();
+
+    // Get slot boundaries for this device
+    uint8_t getSlotStart();
+    uint8_t getSlotEnd();
 
 private:
     TDMAConfig config;
     TDMAStatus status;
     GPSTimestamp currentTime;
 
-    uint8_t lastProcessedMinute;
     uint8_t lastProcessedSecond;
     uint8_t transmissionsCompletedThisSlot;
+    bool slotActiveThisMinute;
 
     // Helper functions
+    uint8_t calculateSlotStart(uint8_t deviceId);
+    uint8_t calculateSlotEnd(uint8_t deviceId);
+    bool isWithinMySlot(uint8_t second);
     bool isTransmissionSecond(uint8_t second);
-    uint8_t findNextTransmissionSecond(uint8_t currentSecond);
-    bool checkMinuteAllocation(uint8_t minute);
+    uint8_t getAbsoluteTransmissionSecond();
 };
 
 #endif // TDMA_SCHEDULER_H

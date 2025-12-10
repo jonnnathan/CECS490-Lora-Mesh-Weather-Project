@@ -1,7 +1,7 @@
 #include "neo6m.h"
 
 // UTC offset configuration
-const int UTC_OFFSET = -7; // set to -8 in winter
+const int UTC_OFFSET = -8; // PST (-8) + 12hr GPS correction = +4
 
 // Global GPS variables
 double g_latitude = 0.0;

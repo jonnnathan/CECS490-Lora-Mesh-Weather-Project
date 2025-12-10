@@ -1,3 +1,4 @@
+/*
 #include "lora_comm.h"
 #include "OLED.h"
 
@@ -632,3 +633,4 @@ void checkForCorruption(const String& sentence, unsigned long txCount) {
   lastSentence = sentence;
   lastTxCount = txCount;
 }
+  */

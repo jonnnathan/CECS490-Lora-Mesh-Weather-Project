@@ -1,1004 +1,708 @@
 /*
- * ESP32 LoRa GPS-Timed TDMA Communication System
- * with Environmental Sensors and Hybrid Altimeter
- *
- * Required Components:
- * - GPS (NEO-6M) - Required for time synchronization
- * - LoRa (SX1262) - Required for communication
- *
- * Optional Components (will use dummy data if not detected):
- * - BMP180: Barometric pressure and temperature
- * - SHT30: Temperature and humidity
- *
- * Features:
- * - GPS-synchronized TDMA for collision-free LoRa communication
- * - Automatic dummy data when sensors not detected
- * - GPS-calibrated hybrid altimeter (when BMP180 available)
- * - Real-time sensor data transmission
+ * ╔═══════════════════════════════════════════════════════════════════════════╗
+ * ║                 ESP32 LoRa GPS-Timed TDMA Mesh Network                    ║
+ * ╠═══════════════════════════════════════════════════════════════════════════╣
+ * ║  A peer-to-peer mesh network using GPS-synchronized TDMA time slots       ║
+ * ║                                                                           ║
+ * ║  Modules:                                                                 ║
+ * ║    - config.h         : All configuration constants                       ║
+ * ║    - node_store       : Per-node message storage & tracking               ║
+ * ║    - packet_handler   : Duplicate detection & RX processing               ║
+ * ║    - display_manager  : OLED display handling                             ║
+ * ║    - serial_output    : Fancy serial terminal output                      ║
+ * ║    - lora_comm        : LoRa radio communication                          ║
+ * ║    - tdma_scheduler   : GPS-timed transmission scheduling                 ║
+ * ║    - neo6m            : GPS module interface                              ║
+ * ╚═══════════════════════════════════════════════════════════════════════════╝
  */
 
-#include "lora_comm.h"      // LoRa communication
-#include "tdma_scheduler.h" // TDMA scheduler
-#include "neo6m.h"          // GPS functionality
-#include "sht30.h"          // Temperature and humidity sensor
-#include "OLED.h"           // Display
-#include "bmp180.h"         // Barometric sensor
+#include <Arduino.h>
 #include <Wire.h>
-#include <math.h>
 
-// ==================== DEVICE CONFIGURATION ====================
-// SET THIS DIFFERENTLY ON EACH DEVICE
-const uint8_t DEVICE_ID = 1;        // Device 1 or Device 2
-const char* DEVICE_NAME = "DEV1";   // "DEV1" or "DEV2"
+// Project modules
+#include "config.h"
+#include "node_store.h"
+#include "packet_handler.h"
+#include "display_manager.h"
+#include "serial_output.h"
+#include "serial_json.h"
+#include "web_dashboard.h"
+#include "thingspeak.h"
+#include "neighbor_table.h"
+#include "duplicate_cache.h"
+#include "transmit_queue.h"
+#include "mesh_stats.h"
+#include "mesh_debug.h"
+#include "mesh_commands.h"
+#include "memory_monitor.h"
+// Hardware interfaces
+#include "lora_comm.h"
+#include "tdma_scheduler.h"
+#include "neo6m.h"
+#include "gradient_routing.h"
+#include "network_time.h"
 
-// ==================== TIMING CONFIGURATION ====================
-const unsigned long RX_CHECK_INTERVAL = 100;    // Check for messages every 100ms
-const unsigned long DISPLAY_TIME = 3000;        // Show status for 3 seconds
-const unsigned long SENSOR_INTERVAL = 1000;     // Read sensors every 1 second
-const unsigned long RECALIBRATION_INTERVAL = 300000; // GPS recalibration: 5 minutes
 
-// ==================== DISPLAY STATES ====================
-enum DisplayState {
-  DISPLAY_WAITING,      // Normal operation
-  DISPLAY_SENDING,      // During transmission
-  DISPLAY_RECEIVED_MSG, // Message received
-  DISPLAY_TX_FAILED,    // Transmission failed
-  DISPLAY_SENSORS       // Show detailed sensor data
-};
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         GLOBAL OBJECTS                                    ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-// ==================== GLOBAL OBJECTS ====================
-OLED display;
 TDMAScheduler tdmaScheduler;
-BMP180 bmp180;
-SHT30 sht30;
 
-// Second I2C bus for sensors (Heltec V3)
-TwoWire I2C_second = TwoWire(1);
-#define SDA2_PIN 7
-#define SCL2_PIN 20
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         STATISTICS                                        ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-// ==================== SENSOR VARIABLES ====================
-// BMP180
-bool  bmp180_ready = false;
-float temperatureF = 0.0f;
-float pressurePa = 0.0f;
-float altitudeStd = 0.0f;
-float altitudeCal = 0.0f;
-bool  calibrated = false;
-static const float SEA_LEVEL_DEFAULT_PA = 101325.0f;
-float seaLevelPa = SEA_LEVEL_DEFAULT_PA;
-
-// SHT30
-bool sht30_ready = false;
-float humidity = 0.0f;
-float temperatureC_SHT = 0.0f;
-float temperatureF_SHT = 0.0f;
-
-// Hybrid Altimeter
-bool autoCalibrated = false;
-unsigned long lastGPSCalibration = 0;
-
-// ==================== LORA VARIABLES ====================
 unsigned long txSeq = 0;
-unsigned long rxCount = 0;
-unsigned long lastRxCheck = 0;
-unsigned long lastSensorRead = 0;
-
-// Statistics
 unsigned long totalTxAttempts = 0;
 unsigned long successfulTx = 0;
-unsigned long totalRxMessages = 0;
+
+// These are accessed by serial_output.cpp
 unsigned long validRxMessages = 0;
-unsigned long corruptedRxMessages = 0;
 unsigned long duplicateRxMessages = 0;
 
-// Message tracking
-String lastReceivedMessage = "";
-unsigned long lastRxTxCount = 0;
-String lastSentMessage = "";
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         TIMING VARIABLES                                  ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-// Display state
-DisplayState currentDisplay = DISPLAY_WAITING;
-unsigned long displayStateStart = 0;
-unsigned long lastDisplaySwitch = 0;
-const unsigned long AUTO_DISPLAY_SWITCH = 5000; // Auto-switch display every 5s
+static unsigned long lastRxCheck = 0;
+static unsigned long lastDisplayUpdate = 0;
+static unsigned long lastGPSStatusPrint = 0;
+static unsigned long lastNodeCheck = 0;
+static unsigned long lastStatsPrint = 0;
+static unsigned long lastNeighborPrune = 0;
+static unsigned long lastBeaconSent = 0;
 
-// GPS time monitoring
-unsigned long lastGPSStatusPrint = 0;
-const unsigned long GPS_STATUS_INTERVAL = 2000; // Print GPS status every 2 seconds
+// Note: BEACON_INTERVAL_MS is now defined in config.h/config.cpp
 
-// ==================== FUNCTION PROTOTYPES ====================
-// Sensor functions
-void initBMP180();
-void initSHT30();
-void calibrateSeaLevel(float knownAltM);
-void readBMP180Data();
-void readSHT30Data();
-void updateHybridAltimeter();
-float getHybridAltitude();
-String getAltitudeSource();
-static float seaLevelPressureFrom(float pressurePa, float knownAltitudeM);
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         SLOT TRACKING                                     ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-// LoRa functions
-bool transmitMessage();
-void checkForIncomingMessages();
-bool parseReceivedMessage(const String& message, String& sentence, unsigned long& txCount, String& fromDevice);
-void handleReceivedMessage(const String& message, float rssi, float snr);
-String buildSensorPayload();
+static uint8_t primaryTxThisSlot = 0;
+static bool wasInSlot = false;
 
-// Display functions
-void updateDisplay();
-void displaySensorData();
-void displayLoRaStatus();
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         BUILD FULL REPORT                                 ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-// Utility functions
-void printSystemInfo();
-void printTransceiverStats();
-void printSeparator();
-void printGPSStatus();
+void buildFullReport(FullReportMsg& report) {
+    // Clear the struct
+    memset(&report, 0, sizeof(report));
+    
+    // Environmental sensors (placeholder values for now - add real sensors later)
+    report.temperatureF_x10 = 725;      // 72.5°F placeholder
+    report.humidity_x10 = 450;          // 45.0% placeholder
+    report.pressure_hPa = 1013;         // 1013 hPa placeholder
+    report.altitude_m = 100;            // 100m placeholder
+    
+    // GPS data
+    if (g_location_valid) {
+        report.latitude_x1e6 = (int32_t)(g_latitude * 1000000.0);
+        report.longitude_x1e6 = (int32_t)(g_longitude * 1000000.0);
+        report.gps_altitude_m = (int16_t)getGPSAltitude();
+        report.satellites = gps.satellites.isValid() ? gps.satellites.value() : 0;
+        report.hdop_x10 = gps.hdop.isValid() ? (uint8_t)(gps.hdop.hdop() * 10) : 255;
+        report.flags |= FLAG_GPS_VALID;
+    } else {
+        report.latitude_x1e6 = 0;
+        report.longitude_x1e6 = 0;
+        report.gps_altitude_m = 0;
+        report.satellites = 0;
+        report.hdop_x10 = 255;
+    }
+    
+    // System status
+    report.uptime_sec = millis() / 1000;
+    report.txCount = (uint16_t)txSeq;
+    report.rxCount = (uint16_t)getRxCount();
+    report.battery_pct = 100;  // Placeholder - add real battery reading later
+    report.neighborCount = neighborTable.getActiveCount();
+    
+    // Flags
+    report.flags |= FLAG_SENSORS_OK;
 
-// ==================== SETUP ====================
-void setup() {
-  Serial.begin(115200);
-  delay(200);
-
-  printSeparator();
-  Serial.println("╔══════════════════════════════════════════════════════════════╗");
-  Serial.print("║     ESP32 LoRa GPS-TDMA + Sensor System - ");
-  Serial.print(DEVICE_NAME);
-  Serial.println("           ║");
-  Serial.println("╚══════════════════════════════════════════════════════════════╝");
-  Serial.println();
-
-  Serial.println("[STARTUP] Initializing integrated system...");
-  Serial.print("[STARTUP] Device ID: ");
-  Serial.print(DEVICE_ID);
-  Serial.print(" (");
-  Serial.print(DEVICE_NAME);
-  Serial.println(")");
-  Serial.println("[INFO] Required: GPS + LoRa | Optional: BMP180, SHT30");
-  Serial.println("[INFO] System will use dummy data if sensors not detected");
-  Serial.println();
-
-  // Initialize OLED
-  Serial.print("[OLED] Initializing display... ");
-  if (display.init()) {
-    Serial.println("✓ SUCCESS");
-    display.clearDisplay();
-    display.drawString(0, 0, "LoRa " + String(DEVICE_NAME));
-    display.drawString(0, 10, "Initializing...");
-    display.updateDisplay();
-  } else {
-    Serial.println("✗ FAILED");
-  }
-
-  // Initialize I2C for sensors
-  Serial.print("[I2C] Initializing sensor bus... ");
-  I2C_second.begin(SDA2_PIN, SCL2_PIN, 100000);
-  Serial.println("✓ SUCCESS");
-
-  // Initialize BMP180 (optional)
-  initBMP180();
-  if (!bmp180_ready) {
-    Serial.println("[WARNING] BMP180 not detected - will use dummy temperature/pressure/altitude");
-  }
-
-  // Initialize SHT30 (optional)
-  initSHT30();
-  if (!sht30_ready) {
-    Serial.println("[WARNING] SHT30 not detected - will use dummy humidity data");
-  }
-
-  // Initialize GPS on Serial2 (TX pin 46)
-  Serial.print("[GPS] Initializing NEO-6M GPS module... ");
-  Serial2.begin(9600, SERIAL_8N1, 46, -1); // RX=-1 (not used), TX=46
-  initGPS();
-  Serial.println("✓ SUCCESS");
-  Serial.println("[GPS] Waiting for GPS fix...");
-
-  // Initialize LoRa
-  Serial.print("[LORA] Initializing radio module... ");
-  if (initLoRa()) {
-    Serial.println("✓ SUCCESS");
-    Serial.println("[LORA] Radio ready for GPS-timed communication");
-  } else {
-    Serial.println("✗ FAILED");
-    Serial.println("[ERROR] LoRa initialization failed");
-  }
-
-  // Initialize TDMA Scheduler
-  Serial.print("[TDMA] Initializing GPS-timed scheduler... ");
-  tdmaScheduler.init(DEVICE_ID, 4); // 4 transmissions per time slot
-  tdmaScheduler.setTransmissionSeconds(0, 15, 30, 45); // Transmit at 0, 15, 30, 45 seconds
-  Serial.println("✓ SUCCESS");
-
-  if (DEVICE_ID == 1) {
-    Serial.println("[TDMA] Device 1: Transmits on EVEN minutes (0, 2, 4, ..., 58)");
-  } else if (DEVICE_ID == 2) {
-    Serial.println("[TDMA] Device 2: Transmits on ODD minutes (1, 3, 5, ..., 59)");
-  }
-
-  // Set initial timing
-  lastRxCheck = millis();
-  lastSensorRead = millis();
-  lastDisplaySwitch = millis();
-  lastGPSStatusPrint = millis();
-
-  // Print component status summary
-  Serial.println();
-  Serial.println("[SUMMARY] Active Components:");
-  Serial.print("  - GPS: INITIALIZED | LoRa: ");
-  Serial.println(isLoRaReady() ? "READY" : "FAILED");
-  Serial.print("  - BMP180: ");
-  Serial.print(bmp180_ready ? "ACTIVE" : "DUMMY DATA");
-  Serial.print(" | SHT30: ");
-  Serial.println(sht30_ready ? "ACTIVE" : "DUMMY DATA");
-  Serial.println("[READY] System operational - GPS + LoRa are sufficient for transmission");
-
-  printSystemInfo();
-  printSeparator();
-  Serial.println("[MAIN LOOP] Starting GPS-timed communication...");
-  Serial.println("[MODE] GPS-synchronized TDMA + Real-time data transmission");
-  Serial.println();
+    // Set time source flags based on TDMA scheduler's current time source
+    TDMAStatus tdmaStatus = tdmaScheduler.getStatus();
+    switch (tdmaStatus.timeSource) {
+        case TIME_SOURCE_GPS:
+            report.flags |= FLAG_TIME_SRC_GPS;
+            break;
+        case TIME_SOURCE_NETWORK:
+            report.flags |= FLAG_TIME_SRC_NET;
+            break;
+        default:
+            report.flags |= FLAG_TIME_SRC_NONE;
+            break;
+    }
 }
 
-// ==================== MAIN LOOP ====================
-void loop() {
-  unsigned long now = millis();
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         TRANSMISSION                                      ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-  // Process GPS data
-  if (Serial2.available() > 0) {
-    processGPSData();
-  }
+bool transmit() {
+    if (!isLoRaReady()) {
+        return false;
+    }
 
-  // Update TDMA scheduler with current GPS time
-  tdmaScheduler.update(g_hour, g_minute, g_second, g_datetime_valid);
+    txSeq++;
+    
+    // Build the FULL_REPORT
+    FullReportMsg report;
+    buildFullReport(report);
+    
+    NodeMessage* selfNode = getNodeMessage(DEVICE_ID);
+    if (selfNode != nullptr) {
+        selfNode->lastReport = report;
+        selfNode->hasData = true;
+        selfNode->lastHeardTime = millis();
+        selfNode->messageCount++;  // <-- ADD THIS
+    }
 
-  // Read sensor data periodically
-  if (now - lastSensorRead >= SENSOR_INTERVAL) {
-    readBMP180Data();
-    readSHT30Data();
-    updateHybridAltimeter();
-    lastSensorRead = now;
-  }
+    // Encode to binary
+    uint8_t buffer[64];
+    uint8_t length = encodeFullReport(buffer, report);
+    
+    // Print TX info
+    Serial.println();
+    printHeader("TRANSMITTING FULL_REPORT");
+    printRow("Sequence", String(txSeq));
+    printRow("Temp", String(report.temperatureF_x10 / 10.0, 1) + " F");
+    printRow("Humidity", String(report.humidity_x10 / 10.0, 1) + " %");
+    printRow("Pressure", String(report.pressure_hPa) + " hPa");
+    printRow("GPS Valid", (report.flags & FLAG_GPS_VALID) ? "Yes" : "No");
+    if (report.flags & FLAG_GPS_VALID) {
+        printRow("Satellites", String(report.satellites));
+    }
+    printRow("Uptime", String(report.uptime_sec) + " sec");
+    printRow("Payload Size", String(length) + " bytes");
+    printFooter();
+    
+    // Send the binary message
+    bool success = sendBinaryMessage(buffer, length);
 
-  // Print GPS status periodically
-  if (now - lastGPSStatusPrint >= GPS_STATUS_INTERVAL) {
-    printGPSStatus();
-    lastGPSStatusPrint = now;
-  }
+    // Print result
+    printTxResult(success);
 
-  // Check for incoming messages frequently (always listen)
-  if (now - lastRxCheck >= RX_CHECK_INTERVAL) {
-    checkForIncomingMessages();
-    lastRxCheck = now;
-  }
+    // Update display and stats
+    if (success) {
+        incrementPacketsSent();
+        DEBUG_TX_F("Transmitted own report | seq=%lu size=%d", txSeq, length);
+        // Create a summary string for the display
+        String summary = "T:" + String(report.temperatureF_x10 / 10.0, 1) + "F";
+        updateTxDisplay(summary, txSeq);
 
-  // GPS-synchronized transmission: Only transmit during assigned time slots
-  if (tdmaScheduler.shouldTransmitNow()) {
-    TDMAStatus status = tdmaScheduler.getStatus();
+        // Output JSON for desktop dashboard (our own node data)
+        // This ensures the gateway's data appears on the dashboard
+        outputNodeDataJson(DEVICE_ID, report, 0, 0);  // RSSI/SNR = 0 for self
+    } else {
+        DEBUG_TX("Transmission FAILED");
+        showTxFailed();
+    }
 
-    Serial.print("[TDMA-TX] Time slot active - Transmission ");
-    Serial.print(status.currentTransmissionIndex + 1);
-    Serial.print("/4 at ");
-    Serial.print(g_hour);
-    Serial.print(":");
-    if (g_minute < 10) Serial.print("0");
-    Serial.print(g_minute);
-    Serial.print(":");
-    if (g_second < 10) Serial.print("0");
-    Serial.println(g_second);
+    return success;
+}
 
-    bool success = transmitMessage();
-    totalTxAttempts++;
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         TRANSMIT QUEUED FORWARDS                          ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+void transmitQueuedForwards(uint8_t slotEndSecond) {
+    // Calculate how much time remains in our slot
+    uint8_t currentSecond = g_second;
+
+    // If we're past our slot end, don't transmit
+    if (currentSecond >= slotEndSecond) {
+        DEBUG_TIME_F("No time for forwards | current=%d end=%d", currentSecond, slotEndSecond);
+        return;
+    }
+
+    // Reserve 1 second buffer before slot end to avoid overrun
+    uint8_t safeEndSecond = (slotEndSecond > 0) ? (slotEndSecond - 1) : 0;
+
+    DEBUG_TIME_F("Forward window | current=%d safe_end=%d queue=%d",
+                 currentSecond, safeEndSecond, transmitQueue.depth());
+
+    // Transmit queued forwards while time and messages remain
+    uint8_t forwardsSent = 0;
+    const uint8_t MAX_FORWARDS_PER_SLOT = 5;  // Safety limit
+
+    while (transmitQueue.depth() > 0 && forwardsSent < MAX_FORWARDS_PER_SLOT) {
+        // Check if we still have time
+        currentSecond = g_second;
+        if (currentSecond >= safeEndSecond) {
+            Serial.println(F("⏱️ Slot time ending - stopping forwards"));
+            break;
+        }
+
+        // Get front message from queue
+        QueuedMessage* msg = transmitQueue.peek();
+        if (msg == nullptr || !msg->occupied) {
+            // Queue issue - clear and break
+            transmitQueue.dequeue();
+            continue;
+        }
+
+        // Transmit the forwarded packet
+        Serial.print(F("🔄 Forwarding queued packet ("));
+        Serial.print(forwardsSent + 1);
+        Serial.print(F("/"));
+        Serial.print(transmitQueue.depth());
+        Serial.print(F(") size="));
+        Serial.print(msg->length);
+        Serial.println(F(" bytes"));
+
+        bool success = sendBinaryMessage(msg->data, msg->length);
+
+        if (success) {
+            incrementPacketsForwarded();
+            DEBUG_TX_F("Forward transmitted | size=%d queue_after=%d",
+                      msg->length, transmitQueue.depth() - 1);
+            Serial.println(F("✅ Forward transmitted"));
+        } else {
+            DEBUG_TX_F("Forward transmission FAILED | size=%d", msg->length);
+            Serial.println(F("❌ Forward failed"));
+        }
+
+        // Remove from queue regardless of success/failure
+        transmitQueue.dequeue();
+        forwardsSent++;
+
+        // Small delay between forwards to avoid radio collisions
+        delay(50);
+    }
+
+    if (forwardsSent > 0) {
+        Serial.print(F("📊 Forwarded "));
+        Serial.print(forwardsSent);
+        Serial.print(F(" packet(s) this slot. Queue remaining: "));
+        Serial.println(transmitQueue.depth());
+    }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         GATEWAY BEACON BROADCASTING                        ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Send a gradient routing beacon from the gateway
+ * This establishes routing paths for all nodes in the mesh
+ */
+void sendGatewayBeacon() {
+    if (!IS_GATEWAY) return;  // Only gateway sends beacons
+    if (!isLoRaReady()) return;
+
+    // Build beacon message
+    BeaconMsg beacon;
+    beacon.distanceToGateway = 0;  // Gateway is distance 0
+    beacon.gatewayId = DEVICE_ID;
+    beacon.sequenceNumber = (uint16_t)(millis() / 1000);  // Use uptime as sequence
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Include GPS time for network time synchronization
+    // Use local time (g_hour/g_minute/g_second) which has UTC offset applied
+    // This ensures all nodes use consistent local time for TDMA scheduling
+    // ─────────────────────────────────────────────────────────────────────────
+    if (g_datetime_valid) {
+        beacon.gpsHour = g_hour;      // Local time (UTC offset already applied)
+        beacon.gpsMinute = g_minute;
+        beacon.gpsSecond = g_second;
+        beacon.gpsValid = 1;
+    } else {
+        beacon.gpsHour = 0;
+        beacon.gpsMinute = 0;
+        beacon.gpsSecond = 0;
+        beacon.gpsValid = 0;
+    }
+
+    // Encode to buffer (now 16 bytes with time sync)
+    uint8_t buffer[20];
+    uint8_t length = encodeBeacon(buffer, beacon);
+
+    // Send beacon
+    bool success = sendBinaryMessage(buffer, length);
 
     if (success) {
-      successfulTx++;
-      currentDisplay = DISPLAY_SENDING;
-      Serial.println("[TX-SUCCESS] Message transmitted successfully");
-      tdmaScheduler.markTransmissionComplete();
+        Serial.println(F(""));
+        Serial.println(F("╔═══════════════════════════════════════════════════════════╗"));
+        Serial.println(F("║           GATEWAY BEACON TRANSMITTED                      ║"));
+        Serial.println(F("╚═══════════════════════════════════════════════════════════╝"));
+        Serial.print(F("  Distance: 0 (gateway)"));
+        Serial.print(F("  |  Seq: "));
+        Serial.print(beacon.sequenceNumber);
+        Serial.print(F("  |  Size: "));
+        Serial.print(length);
+        Serial.println(F(" bytes"));
+        if (beacon.gpsValid) {
+            Serial.print(F("  Time: "));
+            Serial.print(beacon.gpsHour);
+            Serial.print(F(":"));
+            if (beacon.gpsMinute < 10) Serial.print(F("0"));
+            Serial.print(beacon.gpsMinute);
+            Serial.print(F(":"));
+            if (beacon.gpsSecond < 10) Serial.print(F("0"));
+            Serial.print(beacon.gpsSecond);
+            Serial.println(F(" (GPS)"));
+        }
+        Serial.println(F("─────────────────────────────────────────────────────────────"));
     } else {
-      currentDisplay = DISPLAY_TX_FAILED;
-      Serial.println("[TX-FAILED] Transmission failed");
+        Serial.println(F("⚠️ Gateway beacon transmission FAILED"));
     }
+}
 
-    displayStateStart = now;
-    updateDisplay();
+/**
+ * Send any pending beacon rebroadcast (for non-gateway nodes)
+ */
+void sendPendingBeacon() {
+    if (IS_GATEWAY) return;  // Gateway doesn't rebroadcast
+    if (!isLoRaReady()) return;
 
-    // Show stats every 10 transmissions
-    if (totalTxAttempts % 10 == 0) {
-      printTransceiverStats();
+    BeaconMsg beacon;
+    if (getPendingBeacon(beacon)) {
+        // Encode to buffer
+        uint8_t buffer[16];
+        uint8_t length = encodeBeacon(buffer, beacon);
+
+        // Send beacon
+        bool success = sendBinaryMessage(buffer, length);
+
+        if (success) {
+            Serial.println(F(""));
+            Serial.println(F("╔═══════════════════════════════════════════════════════════╗"));
+            Serial.println(F("║           BEACON REBROADCAST                              ║"));
+            Serial.println(F("╚═══════════════════════════════════════════════════════════╝"));
+            Serial.print(F("  Distance: "));
+            Serial.print(beacon.distanceToGateway);
+            Serial.print(F(" hops  |  TTL: "));
+            Serial.print(beacon.meshHeader.ttl);
+            Serial.print(F("  |  Size: "));
+            Serial.print(length);
+            Serial.println(F(" bytes"));
+            // Show relayed time info
+            if (beacon.gpsValid) {
+                Serial.print(F("  Relaying Time: "));
+                Serial.print(beacon.gpsHour);
+                Serial.print(F(":"));
+                if (beacon.gpsMinute < 10) Serial.print(F("0"));
+                Serial.print(beacon.gpsMinute);
+                Serial.print(F(":"));
+                if (beacon.gpsSecond < 10) Serial.print(F("0"));
+                Serial.print(beacon.gpsSecond);
+                Serial.println(F(" (multi-hop relay)"));
+            }
+            Serial.println(F("─────────────────────────────────────────────────────────────"));
+        } else {
+            Serial.println(F("⚠️ Beacon rebroadcast FAILED"));
+        }
     }
-
-    Serial.println();
-  }
-
-  // Auto-switch display between sensor and LoRa status
-  if (currentDisplay == DISPLAY_WAITING && now - lastDisplaySwitch >= AUTO_DISPLAY_SWITCH) {
-    currentDisplay = DISPLAY_SENSORS;
-    lastDisplaySwitch = now;
-  } else if (currentDisplay == DISPLAY_SENSORS && now - lastDisplaySwitch >= AUTO_DISPLAY_SWITCH) {
-    currentDisplay = DISPLAY_WAITING;
-    lastDisplaySwitch = now;
-  }
-
-  // Update display based on state and timing
-  if (currentDisplay != DISPLAY_WAITING && currentDisplay != DISPLAY_SENSORS) {
-    if (now - displayStateStart >= DISPLAY_TIME) {
-      currentDisplay = DISPLAY_WAITING;
-      updateDisplay();
-    }
-  }
-
-  updateDisplay();
-  delay(10); // Small delay to prevent overwhelming the loop
 }
 
-// ==================== SENSOR FUNCTIONS ====================
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         SETUP                                             ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-void initBMP180() {
-  Serial.print("[BMP180] Initializing... ");
-  if (bmp180.begin(&I2C_second, BMP180_OSS_ULTRAHIGHRES)) {
-    bmp180_ready = true;
-    Serial.println("✓ SUCCESS");
-  } else {
-    bmp180_ready = false;
-    Serial.println("✗ FAILED");
-  }
-}
+void setup() {
+    Serial.begin(115200);
+    delay(200);
 
-void initSHT30() {
-  Serial.print("[SHT30] Initializing... ");
-  if (sht30.begin(&I2C_second)) {
-    sht30_ready = true;
-    Serial.println("✓ SUCCESS");
-  } else {
-    sht30_ready = false;
-    Serial.println("✗ FAILED");
-  }
-}
+    // Print startup banner
+    printStartupBanner();
+    printHeader("SYSTEM INITIALIZATION");
 
-void readSHT30Data() {
-  if (!sht30_ready) return;
+    // Initialize node store
+    initNodeStore();
+    printRow("Node Store", "OK (" + String(MESH_MAX_NODES) + " slots)");
 
-  if (sht30.read()) {
-    temperatureC_SHT = sht30.getTemperature();
-    temperatureF_SHT = (temperatureC_SHT * 9.0f / 5.0f) + 32.0f;
-    humidity = sht30.getHumidity();
-  }
-}
+    // Initialize packet handler
+    initPacketHandler();
+    printRow("Packet Handler", "OK");
 
-void calibrateSeaLevel(float knownAltM) {
-  const int N = 8;
-  float sumPa = 0.0f;
-  for (int i = 0; i < N; ++i) {
-    float p = bmp180.readPressure();
-    if (p > 10000.0f && p < 120000.0f) {
-      sumPa += p;
+    // Initialize mesh statistics
+    initMeshStats();
+    printRow("Mesh Statistics", "OK");
+
+    // Initialize memory monitor
+    initMemoryMonitor();
+    printRow("Memory Monitor", "OK");
+
+    // Initialize gradient routing
+    initGradientRouting();
+    printRow("Gradient Routing", IS_GATEWAY ? "OK (Gateway)" : "OK (Node)");
+
+    // Initialize network time sync (for nodes without GPS)
+    initNetworkTime();
+    printRow("Network Time Sync", "OK (fallback enabled)");
+
+    // Initialize display
+    if (initDisplay()) {
+        printRow("OLED Display", "OK");
     } else {
-      --i;
-    }
-    delay(60);
-  }
-  float pNow = sumPa / N;
-  seaLevelPa = seaLevelPressureFrom(pNow, knownAltM);
-  calibrated = true;
-  Serial.println("[BMP180] Calibrated to altitude: " + String(knownAltM) + "m, SLP: " + String(seaLevelPa/100.0f) + "hPa");
-}
-
-static float seaLevelPressureFrom(float pressurePa, float knownAltitudeM) {
-  return pressurePa / powf(1.0f - (knownAltitudeM / 44330.0f), 5.255f);
-}
-
-void readBMP180Data() {
-  if (!bmp180_ready) return;
-
-  float tempC = bmp180.readTemperature();
-  temperatureF = (tempC * 9.0f / 5.0f) + 32.0f;
-  pressurePa = bmp180.readPressure();
-  altitudeStd = bmp180.readAltitude(SEA_LEVEL_DEFAULT_PA);
-
-  if (calibrated) {
-    altitudeCal = bmp180.readAltitude(seaLevelPa);
-  } else {
-    altitudeCal = altitudeStd;
-  }
-}
-
-void updateHybridAltimeter() {
-  if (isLocationValid() && isAltitudeValid() && bmp180_ready &&
-      (millis() - lastGPSCalibration > RECALIBRATION_INTERVAL)) {
-
-    float gpsAlt = getGPSAltitude();
-
-    if (gpsAlt > -500.0f && gpsAlt < 9000.0f) {
-      calibrateSeaLevel(gpsAlt);
-      autoCalibrated = true;
-      lastGPSCalibration = millis();
-      Serial.println("[AUTO-CAL] BMP180 calibrated with GPS altitude: " + String(gpsAlt, 1) + "m");
-    }
-  }
-}
-
-float getHybridAltitude() {
-  if (autoCalibrated && bmp180_ready) {
-    return bmp180.readAltitude(seaLevelPa);
-  } else if (isAltitudeValid()) {
-    return getGPSAltitude();
-  }
-  return -999.0f;
-}
-
-String getAltitudeSource() {
-  if (autoCalibrated && bmp180_ready) return "BAR";
-  else if (isAltitudeValid()) return "GPS";
-  return "---";
-}
-
-// ==================== LORA FUNCTIONS ====================
-
-bool transmitMessage() {
-  if (!isLoRaReady()) {
-    Serial.println("[TX-ERROR] LoRa module not ready");
-    return false;
-  }
-
-  txSeq++;
-  String payload = buildSensorPayload();
-
-  lastSentMessage = payload;
-
-  Serial.println("┌─────────────────────────────────────────────────────────────┐");
-  Serial.print("│ TRANSMITTING FROM ");
-  Serial.print(DEVICE_NAME);
-  Serial.print(" - MESSAGE #");
-  Serial.print(txSeq);
-
-  int padding = 29 - String(txSeq).length();
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("│");
-
-  String gpsTimestamp = tdmaScheduler.getGPSTimestampString();
-  Serial.print("│ GPS Time: ");
-  Serial.print(gpsTimestamp);
-  padding = 51 - gpsTimestamp.length();
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("│");
-
-  Serial.print("│ Payload: ");
-  Serial.print(payload.substring(0, 50));
-  if (payload.length() > 50) Serial.print("...");
-  padding = 51 - min((int)payload.length(), 50);
-  if (payload.length() > 50) padding -= 3;
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("│");
-
-  Serial.print("│ Size: ");
-  Serial.print(payload.length());
-  Serial.print(" bytes");
-  padding = 52 - String(payload.length()).length() - 6;
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("│");
-
-  Serial.println("└─────────────────────────────────────────────────────────────┘");
-
-  return sendMessage(payload);
-}
-
-String buildSensorPayload() {
-  // Get GPS timestamp
-  String gpsTimestamp = tdmaScheduler.getGPSTimestampString();
-
-  // Build sensor data string with real or dummy data
-  String sensorData = "";
-
-  // Temperature - use real if available, otherwise dummy
-  if (bmp180_ready) {
-    sensorData += "T:" + String(temperatureF, 1) + "F";
-  } else {
-    sensorData += "T:--.-F";  // Dummy temperature
-  }
-
-  // Humidity - use real if available, otherwise dummy
-  if (sht30_ready) {
-    sensorData += ",H:" + String(humidity, 1) + "%";
-  } else {
-    sensorData += ",H:--.-%";  // Dummy humidity
-  }
-
-  // Pressure - use real if available, otherwise dummy
-  if (bmp180_ready) {
-    sensorData += ",P:" + String(pressurePa/100.0f, 1) + "hPa";
-  } else {
-    sensorData += ",P:---.-hPa";  // Dummy pressure
-  }
-
-  // Altitude - use hybrid if available, otherwise dummy
-  float altitude = getHybridAltitude();
-  if (altitude != -999.0f) {
-    sensorData += ",A:" + String(altitude, 1) + "m(" + getAltitudeSource() + ")";
-  } else {
-    sensorData += ",A:----.-m(---)";  // Dummy altitude
-  }
-
-  // GPS coordinates - use real if available, otherwise dummy
-  if (isLocationValid()) {
-    sensorData += ",GPS:" + String(getLatitude(), 4) + "," + String(getLongitude(), 4);
-  } else {
-    sensorData += ",GPS:---.----,---.----";  // Dummy GPS coordinates
-  }
-
-  // Create complete message: "SENSOR_DATA [DEV1:#123@TIMESTAMP]"
-  String message = sensorData + " [" + String(DEVICE_NAME) + ":#" + String(txSeq) + "@" + gpsTimestamp + "]";
-
-  return message;
-}
-
-void checkForIncomingMessages() {
-  String msg = receiveMessage();
-
-  if (msg.length() > 0) {
-    float rssi = getLastRSSI();
-    float snr = getLastSNR();
-
-    Serial.println("[RX-ACTIVITY] ✓ MESSAGE RECEIVED");
-    handleReceivedMessage(msg, rssi, snr);
-
-    currentDisplay = DISPLAY_RECEIVED_MSG;
-    displayStateStart = millis();
-    updateDisplay();
-  }
-}
-
-void handleReceivedMessage(const String& message, float rssi, float snr) {
-  totalRxMessages++;
-
-  String sentence = "";
-  unsigned long txCount = 0;
-  String fromDevice = "";
-  bool parseSuccess = parseReceivedMessage(message, sentence, txCount, fromDevice);
-
-  if (parseSuccess) {
-    validRxMessages++;
-    rxCount++;
-
-    if (message == lastReceivedMessage) {
-      duplicateRxMessages++;
-      Serial.println("[RX-WARNING] Duplicate message detected");
+        printRow("OLED Display", "FAILED");
     }
 
-    lastReceivedMessage = message;
-    lastRxTxCount = txCount;
+    // Initialize GPS
+    Serial2.begin(9600, SERIAL_8N1, 46, -1);
+    initGPS();
+    printRow("GPS Module", "OK - Waiting for fix");
 
+    // Initialize LoRa
+    if (initLoRa()) {
+        printRow("LoRa Radio", "OK");
+        setLoRaReceiveMode();
+    } else {
+        printRow("LoRa Radio", "FAILED");
+    }
+
+    // Initialize TDMA Scheduler
+    tdmaScheduler.init(DEVICE_ID);
+    printRow("TDMA Scheduler", "OK");
+    if (IS_GATEWAY) {
+        initThingSpeak();
+        printRow("ThingSpeak", THINGSPEAK_ENABLED ? "Enabled" : "Disabled");
+    }
+    printRow("  Slot Start", String(tdmaScheduler.getSlotStart()) + "s");
+    printRow("  Slot End", String(tdmaScheduler.getSlotEnd()) + "s");
+
+    printDivider();
+    printRow("Device ID", String(DEVICE_ID));
+    printRow("Device Name", String(DEVICE_NAME));
+    printRow("Node Timeout", String(NODE_TIMEOUT_MS / 1000) + "s");
+    printRow("Message Type", "FULL_REPORT (32 bytes)");
+    
+        // Initialize Web Dashboard (gateway only)
+    if (IS_GATEWAY) {
+        printDivider();
+        // Use lightweight dashboard for AP mode, full dashboard for Station mode
+        if (!WIFI_USE_STATION_MODE) {
+            if (initWebDashboardLite()) {
+                printRow("WiFi Mode", "Access Point (Lite)");
+                printRow("Dashboard IP", getGatewayIP());
+            } else {
+                printRow("WiFi AP", "FAILED");
+            }
+        } else {
+            if (initWebDashboard()) {
+                printRow("WiFi Mode", "Station (Full)");
+                printRow("Dashboard IP", getGatewayIP());
+            } else {
+                printRow("WiFi", "FAILED");
+            }
+        }
+    }
+    
+    printFooter();
+
+
+
+    // Initialize timing
+    unsigned long now = millis();
+    lastRxCheck = now;
+    lastDisplayUpdate = now;
+    lastGPSStatusPrint = now;
+    lastNodeCheck = now;
+    lastStatsPrint = now;
+    lastNeighborPrune = now;
+    lastBeaconSent = now;
+
+    // Ready message
     Serial.println();
-    Serial.println("┌─────────────────────────────────────────────────────────────┐");
-    Serial.print("│ MESSAGE FROM ");
-    Serial.print(fromDevice);
-    Serial.print(" - RX #");
-    Serial.print(rxCount);
-
-    int padding = 39 - fromDevice.length() - String(rxCount).length();
-    for(int i = 0; i < padding; i++) Serial.print(" ");
-    Serial.println("│");
-
-    Serial.print("│ Remote TX #");
-    Serial.print(txCount);
-    padding = 48 - String(txCount).length();
-    for(int i = 0; i < padding; i++) Serial.print(" ");
-    Serial.println("│");
-
-    Serial.print("│ Data: ");
-    Serial.print(sentence.substring(0, 54));
-    if (sentence.length() > 54) Serial.print("...");
-    padding = 54 - min((int)sentence.length(), 54);
-    if (sentence.length() > 54) padding -= 3;
-    for(int i = 0; i < padding; i++) Serial.print(" ");
-    Serial.println("│");
-
-    Serial.println("├─────────────────────────────────────────────────────────────┤");
-
-    Serial.print("│ RSSI: ");
-    Serial.print(rssi, 1);
-    Serial.print(" dBm | SNR: ");
-    Serial.print(snr, 1);
-    Serial.print(" dB | Quality: ");
-
-    String quality;
-    if (rssi > -70 && snr > 10) quality = "Excellent";
-    else if (rssi > -85 && snr > 5) quality = "Good";
-    else if (rssi > -100 && snr > 0) quality = "Fair";
-    else quality = "Poor";
-
-    Serial.print(quality);
-
-    String signalInfo = String(rssi, 1) + " dBm | SNR: " + String(snr, 1) + " dB | Quality: " + quality;
-    padding = 56 - signalInfo.length();
-    for(int i = 0; i < padding; i++) Serial.print(" ");
-    Serial.println("│");
-
-    Serial.println("└─────────────────────────────────────────────────────────────┘");
+    Serial.println(F("╔═══════════════════════════════════════════════════════════════╗"));
+    Serial.println(F("║  >> SYSTEM READY - Listening for transmissions...             ║"));
+    Serial.println(F("╚═══════════════════════════════════════════════════════════════╝"));
     Serial.println();
 
-  } else {
-    corruptedRxMessages++;
-    Serial.println("[RX-ERROR] Failed to parse received message");
-    Serial.print("[RX-ERROR] Raw content: \"");
-    Serial.print(message);
-    Serial.println("\"");
-  }
+    // Memory check
+    Serial.println();
+    Serial.println(F("╔═══════════════════════════════════════════════════════════════╗"));
+    Serial.println(F("║                      MEMORY STATUS                            ║"));
+    Serial.print(F("║  Free Heap:  "));
+    Serial.print(ESP.getFreeHeap() / 1024);
+    Serial.println(F(" KB                                          ║"));
+    Serial.print(F("║  Total Heap: "));
+    Serial.print(ESP.getHeapSize() / 1024);
+    Serial.println(F(" KB                                          ║"));
+    Serial.println(F("╚═══════════════════════════════════════════════════════════════╝"));
 }
 
-bool parseReceivedMessage(const String& message, String& sentence, unsigned long& txCount, String& fromDevice) {
-  int bracketStart = message.lastIndexOf(" [");
-  if (bracketStart == -1) return false;
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         MAIN LOOP                                         ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-  int bracketEnd = message.indexOf(']', bracketStart);
-  if (bracketEnd == -1) return false;
-
-  sentence = message.substring(0, bracketStart);
-  sentence.trim();
-
-  String bracketContent = message.substring(bracketStart + 2, bracketEnd);
-
-  int colonPos = bracketContent.indexOf(":#");
-  if (colonPos == -1) return false;
-
-  fromDevice = bracketContent.substring(0, colonPos);
-
-  String afterColon = bracketContent.substring(colonPos + 2);
-  int atPos = afterColon.indexOf('@');
-
-  String countStr;
-  String gpsTimestamp = "";
-
-  if (atPos != -1) {
-    countStr = afterColon.substring(0, atPos);
-    gpsTimestamp = afterColon.substring(atPos + 1);
-  } else {
-    countStr = afterColon;
-  }
-
-  txCount = countStr.toInt();
-
-  if (sentence.length() == 0 || fromDevice.length() == 0 || (txCount == 0 && countStr != "0")) {
-    return false;
-  }
-
-  if (fromDevice == DEVICE_NAME) {
-    Serial.println("[RX-FILTER] Ignoring our own transmission");
-    return false;
-  }
-
-  if (gpsTimestamp.length() > 0) {
-    Serial.print("[RX-GPS] Message timestamp: ");
-    Serial.println(gpsTimestamp);
-  }
-
-  return true;
-}
-
-// ==================== DISPLAY FUNCTIONS ====================
-
-void updateDisplay() {
-  display.clearDisplay();
-
-  switch (currentDisplay) {
-    case DISPLAY_WAITING:
-      displayLoRaStatus();
-      break;
-
-    case DISPLAY_SENSORS:
-      displaySensorData();
-      break;
-
-    case DISPLAY_SENDING: {
-      display.drawString(0, 0, "Sending...");
-      display.drawString(0, 10, "TX #" + String(txSeq));
-      if (g_datetime_valid) {
-        char timeStr[12];
-        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", g_hour, g_minute, g_second);
-        display.drawString(0, 20, String(timeStr));
-      }
-      display.drawString(0, 30, String(lastSentMessage.length()) + " bytes");
-      break;
+void loop() {
+    unsigned long now = millis();
+    // ─────────────────────────────────────────────────────────────────────────
+    // GPS Processing (High Priority)
+    // ─────────────────────────────────────────────────────────────────────────
+    while (Serial2.available() > 0) {
+        processGPSData();
     }
 
-    case DISPLAY_RECEIVED_MSG:
-      display.drawString(0, 0, "Received!");
-      display.drawString(0, 10, "From: " + String(lastReceivedMessage.indexOf("DEV1") > 0 ? "DEV1" : "DEV2"));
-      display.drawString(0, 20, "RX #" + String(rxCount));
-      display.drawString(0, 30, "TX #" + String(lastRxTxCount));
-      break;
+    // Update TDMA scheduler with current time (GPS or network fallback)
+    // Require at least 1 satellite for GPS time to be valid for TDMA
+    // This prevents using stale cached GPS time when satellites are lost
+    bool gpsValidForTDMA = g_datetime_valid && gps.satellites.isValid() && gps.satellites.value() >= 1;
+    TimeSource timeSource = tdmaScheduler.updateWithFallback(g_hour, g_minute, g_second, gpsValidForTDMA);
 
-    case DISPLAY_TX_FAILED:
-      display.drawString(0, 0, "TX Failed!");
-      display.drawString(0, 10, "Check radio");
-      display.drawString(0, 20, "TX #" + String(txSeq));
-      display.drawString(0, 30, "Retrying...");
-      break;
-  }
+    // ─────────────────────────────────────────────────────────────────────────
+    // Slot Transition Detection
+    // ─────────────────────────────────────────────────────────────────────────
+    bool inSlot = tdmaScheduler.isMyTimeSlot();
 
-  display.updateDisplay();
-}
-
-void displayLoRaStatus() {
-  // Show GPS time and mode
-  if (g_datetime_valid) {
-    char timeStr[20];
-    String mode = tdmaScheduler.getDeviceMode();
-    if (mode.length() > 8) mode = mode.substring(0, 8);
-    snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d %s", g_hour, g_minute, g_second, mode.c_str());
-    display.drawString(0, 0, String(timeStr));
-  } else {
-    display.drawString(0, 0, String(DEVICE_NAME) + " GPS?");
-  }
-
-  // Show TX/RX counts
-  display.drawString(0, 10, "TX:" + String(txSeq) + " RX:" + String(rxCount));
-
-  // Show TDMA mode
-  String mode = tdmaScheduler.getDeviceMode();
-  if (mode == "TX_MODE") {
-    TDMAStatus status = tdmaScheduler.getStatus();
-    int nextSec = status.nextTransmissionSecond;
-    display.drawString(0, 20, "TX@" + String(nextSec) + "s");
-  } else if (mode == "RX_MODE") {
-    display.drawString(0, 20, "RX Mode");
-  } else if (mode == "TX_DONE") {
-    display.drawString(0, 20, "TX Complete");
-  } else {
-    display.drawString(0, 20, "Wait GPS");
-  }
-
-  // Show success rate
-  if (totalTxAttempts > 0) {
-    float txSuccessRate = (float)successfulTx / totalTxAttempts * 100.0;
-    display.drawString(0, 30, "Rate:" + String(txSuccessRate, 0) + "%");
-  }
-}
-
-void displaySensorData() {
-  // Temperature
-  if (bmp180_ready) {
-    display.drawString(0, 0, "T:" + String(temperatureF, 1) + "F");
-  } else {
-    display.drawString(0, 0, "Temp: ---");
-  }
-
-  // Humidity
-  if (sht30_ready) {
-    display.drawString(0, 10, "H:" + String(humidity, 1) + "%");
-  } else {
-    display.drawString(0, 10, "Hum: ---");
-  }
-
-  // Pressure
-  if (bmp180_ready) {
-    display.drawString(0, 20, "P:" + String(pressurePa/100.0f, 1) + "hPa");
-  } else {
-    display.drawString(0, 20, "Press: ---");
-  }
-
-  // Altitude
-  float altitude = getHybridAltitude();
-  String altSource = getAltitudeSource();
-  if (altitude != -999.0f) {
-    display.drawString(0, 30, "A:" + String(altitude, 0) + "m " + altSource);
-  } else {
-    display.drawString(0, 30, "Alt: ---");
-  }
-}
-
-// ==================== UTILITY FUNCTIONS ====================
-
-void printSystemInfo() {
-  Serial.println();
-  Serial.println("┌─────────────────────────────────────────────────────────────┐");
-  Serial.println("│              GPS-TIMED SENSOR SYSTEM INFO                  │");
-  Serial.println("├─────────────────────────────────────────────────────────────┤");
-  Serial.print("│ Device: ");
-  Serial.print(DEVICE_NAME);
-  Serial.print(" (ID: ");
-  Serial.print(DEVICE_ID);
-  Serial.print(")");
-
-  String deviceInfo = String(DEVICE_NAME) + " (ID: " + String(DEVICE_ID) + ")";
-  int padding = 48 - deviceInfo.length();
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("│");
-
-  Serial.print("│ RX Check: ");
-  Serial.print(RX_CHECK_INTERVAL);
-  Serial.println(" ms                                     │");
-  Serial.println("│ Mode: GPS-Synchronized TDMA with Sensors               │");
-  Serial.println("│ TX Schedule: 4 transmissions per assigned minute       │");
-  Serial.println("│ TX Seconds: 0, 15, 30, 45                              │");
-
-  if (DEVICE_ID == 1) {
-    Serial.println("│ Time Slots: EVEN minutes (0, 2, 4, ..., 58)            │");
-  } else if (DEVICE_ID == 2) {
-    Serial.println("│ Time Slots: ODD minutes (1, 3, 5, ..., 59)             │");
-  }
-
-  Serial.print("│ Sensors: BMP180=");
-  Serial.print(bmp180_ready ? "OK" : "FAIL");
-  Serial.print(", SHT30=");
-  Serial.print(sht30_ready ? "OK" : "FAIL");
-  Serial.print(", GPS=INIT");
-  padding = 25;
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("│");
-
-  Serial.println("└─────────────────────────────────────────────────────────────┘");
-  Serial.println();
-}
-
-void printTransceiverStats() {
-  Serial.println();
-  Serial.println("╔═════════════════════════════════════════════════════════════╗");
-  Serial.println("║              GPS-TIMED COMMUNICATION STATS                 ║");
-  Serial.println("╠═════════════════════════════════════════════════════════════╣");
-
-  // TX Stats
-  Serial.print("║ TX Attempts: ");
-  Serial.print(totalTxAttempts);
-  Serial.print(" | Successful: ");
-  Serial.print(successfulTx);
-
-  String txStats = String(totalTxAttempts) + " | Successful: " + String(successfulTx);
-  int padding = 38 - txStats.length();
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("║");
-
-  if (totalTxAttempts > 0) {
-    float txRate = (float)successfulTx / totalTxAttempts * 100.0;
-    Serial.print("║ TX Success Rate: ");
-    Serial.print(txRate, 1);
-    Serial.print("%");
-
-    String txRateStr = String(txRate, 1) + "%";
-    padding = 40 - txRateStr.length();
-    for(int i = 0; i < padding; i++) Serial.print(" ");
-    Serial.println("║");
-  }
-
-  // RX Stats
-  Serial.print("║ RX Total: ");
-  Serial.print(totalRxMessages);
-  Serial.print(" | Valid: ");
-  Serial.print(validRxMessages);
-  Serial.print(" | Corrupted: ");
-  Serial.print(corruptedRxMessages);
-
-  String rxStats = String(totalRxMessages) + " | Valid: " + String(validRxMessages) + " | Corrupted: " + String(corruptedRxMessages);
-  padding = 59 - rxStats.length();
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("║");
-
-  if (totalRxMessages > 0) {
-    float rxRate = (float)validRxMessages / totalRxMessages * 100.0;
-    Serial.print("║ RX Success Rate: ");
-    Serial.print(rxRate, 1);
-    Serial.print("%");
-
-    String rxRateStr = String(rxRate, 1) + "%";
-    padding = 40 - rxRateStr.length();
-    for(int i = 0; i < padding; i++) Serial.print(" ");
-    Serial.println("║");
-  }
-
-  Serial.print("║ Duplicates: ");
-  Serial.print(duplicateRxMessages);
-
-  padding = 46 - String(duplicateRxMessages).length();
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("║");
-
-  // Sensor status
-  Serial.print("║ BMP180: ");
-  Serial.print(bmp180_ready ? "OK" : "FAIL");
-  Serial.print(" | SHT30: ");
-  Serial.print(sht30_ready ? "OK" : "FAIL");
-  Serial.print(" | GPS: ");
-  Serial.print(g_datetime_valid ? "SYNCED" : "SEARCHING");
-
-  String sensorStatus = (bmp180_ready ? "OK" : "FAIL") + String(" | SHT30: ") + (sht30_ready ? "OK" : "FAIL") + " | GPS: " + (g_datetime_valid ? "SYNCED" : "SEARCHING");
-  padding = 51 - sensorStatus.length();
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("║");
-
-  Serial.print("║ Runtime: ");
-  unsigned long uptimeSeconds = millis() / 1000;
-  unsigned long hours = uptimeSeconds / 3600;
-  unsigned long minutes = (uptimeSeconds % 3600) / 60;
-  unsigned long seconds = uptimeSeconds % 60;
-
-  Serial.print(hours);
-  Serial.print("h ");
-  Serial.print(minutes);
-  Serial.print("m ");
-  Serial.print(seconds);
-  Serial.print("s");
-
-  String uptimeStr = String(hours) + "h " + String(minutes) + "m " + String(seconds) + "s";
-  padding = 41 - uptimeStr.length();
-  for(int i = 0; i < padding; i++) Serial.print(" ");
-  Serial.println("║");
-
-  Serial.println("╚═════════════════════════════════════════════════════════════╝");
-  Serial.println();
-}
-
-void printSeparator() {
-  Serial.println("===============================================================");
-}
-
-void printGPSStatus() {
-  // Always show GPS status line with raw values
-  Serial.print("[GPS-TIME] ");
-
-  // Show time values (mark as invalid if not synced)
-  if (gps.time.isValid() && gps.date.isValid()) {
-    char timeStr[30];
-    snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d%s",
-             g_year, g_month, g_day, g_hour, g_minute, g_second,
-             g_datetime_valid ? "" : "?");
-    Serial.print(timeStr);
-  } else if (gps.time.isValid()) {
-    // Only time available, no date
-    char timeStr[15];
-    snprintf(timeStr, sizeof(timeStr), "??-??-?? %02d:%02d:%02d?",
-             gps.time.hour(), gps.time.minute(), gps.time.second());
-    Serial.print(timeStr);
-  } else {
-    Serial.print("????-??-?? ??:??:??");
-  }
-
-  // Show satellite count
-  Serial.print(" | Sats:");
-  if (gps.satellites.isValid()) {
-    Serial.print(gps.satellites.value());
-  } else {
-    Serial.print("?");
-  }
-
-  // Show HDOP (horizontal dilution of precision) - lower is better
-  if (gps.hdop.isValid()) {
-    Serial.print(" | HDOP:");
-    Serial.print(gps.hdop.hdop(), 1);
-  }
-
-  // Show location (mark as invalid if not locked)
-  Serial.print(" | Pos:");
-  if (gps.location.isValid()) {
-    Serial.print(gps.location.lat(), 4);
-    Serial.print(",");
-    Serial.print(gps.location.lng(), 4);
-    if (!g_location_valid) {
-      Serial.print("?");
+    if (inSlot && !wasInSlot) {
+        primaryTxThisSlot = 0;
+        printSlotEntry();
+    } else if (!inSlot && wasInSlot) {
+        printSlotExit(primaryTxThisSlot);
     }
-  } else {
-    Serial.print("?.????,?.????");
-  }
+    wasInSlot = inSlot;
 
-  // Show TDMA mode only when time is synced
-  if (g_datetime_valid) {
-    String mode = tdmaScheduler.getDeviceMode();
-    Serial.print(" | ");
-    Serial.print(mode);
-
-    // Show next action based on mode
-    if (mode == "TX_MODE") {
-      TDMAStatus status = tdmaScheduler.getStatus();
-      Serial.print("@");
-      Serial.print(status.nextTransmissionSecond);
-      Serial.print("s");
-    } else if (mode == "RX_MODE") {
-      Serial.print("(Listen)");
+    // ─────────────────────────────────────────────────────────────────────────
+    // Periodic Tasks
+    // ─────────────────────────────────────────────────────────────────────────
+    
+    // GPS Status
+    if (now - lastGPSStatusPrint >= GPS_STATUS_INTERVAL_MS) {
+        printGPSStatusLine();
+        lastGPSStatusPrint = now;
     }
-  } else {
-    Serial.print(" | ACQUIRING_FIX");
-  }
 
-  Serial.println();
+    // Node timeout checks
+    if (now - lastNodeCheck >= NODE_CHECK_INTERVAL_MS) {
+        checkNodeTimeouts();
+        lastNodeCheck = now;
+    }
+
+    // Periodic stats
+    if (now - lastStatsPrint >= STATS_PRINT_INTERVAL_MS) {
+        validRxMessages = getValidRxCount();
+        duplicateRxMessages = getDuplicateCount();
+        printNetworkStatus();
+        printSystemStats();
+        printMeshStats();
+        printRoutingTable();   // Show gradient routing status
+        printRoutingStats();   // Show routing statistics
+
+        // Output JSON for desktop dashboard (serial bridge)
+        outputGatewayStatusJson();
+        outputMeshStatsJson();
+
+        lastStatsPrint = now;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Gradient Routing - Beacon Broadcasting (only if enabled in config)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    if (USE_GRADIENT_ROUTING) {
+        // Gateway: Send periodic beacons
+        if (IS_GATEWAY && (now - lastBeaconSent >= BEACON_INTERVAL_MS)) {
+            sendGatewayBeacon();
+            lastBeaconSent = now;
+        }
+
+        // Non-gateway nodes: Send pending beacon rebroadcasts
+        if (!IS_GATEWAY && hasPendingBeacon()) {
+            sendPendingBeacon();
+        }
+    }
+
+    // Neighbor table and duplicate cache pruning
+    if (now - lastNeighborPrune >= NEIGHBOR_PRUNE_INTERVAL_MS) {
+        // Prune expired neighbors
+        uint8_t prunedNeighbors = neighborTable.pruneExpired(NEIGHBOR_TIMEOUT_MS);
+        if (prunedNeighbors > 0) {
+            Serial.print(F("🗑 Pruned "));
+            Serial.print(prunedNeighbors);
+            Serial.print(F(" expired neighbor(s). Active: "));
+            Serial.println(neighborTable.getActiveCount());
+        }
+
+        // Prune expired duplicate cache entries
+        uint8_t prunedDuplicates = duplicateCache.prune();
+        if (prunedDuplicates > 0) {
+            Serial.print(F("🧹 Cleaned "));
+            Serial.print(prunedDuplicates);
+            Serial.print(F(" old duplicate entries. Cached: "));
+            Serial.println(duplicateCache.getCount());
+        }
+
+        // Prune old queued forwards (older than 1 minute = 60000ms)
+        uint8_t queueDepthBefore = transmitQueue.depth();
+        transmitQueue.pruneOld(60000);
+        uint8_t queueDepthAfter = transmitQueue.depth();
+
+        if (queueDepthBefore > queueDepthAfter) {
+            Serial.print(F("🗑️ Pruned "));
+            Serial.print(queueDepthBefore - queueDepthAfter);
+            Serial.print(F(" stale forward(s). Queue: "));
+            Serial.println(queueDepthAfter);
+        }
+
+        // Check memory health
+        updateMemoryStats();
+
+        lastNeighborPrune = now;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Receive Processing
+    // ─────────────────────────────────────────────────────────────────────────
+    if (now - lastRxCheck >= RX_CHECK_INTERVAL_MS) {
+        checkForIncomingMessages();
+        lastRxCheck = now;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Serial Command Processing
+    // ─────────────────────────────────────────────────────────────────────────
+    processMeshCommands();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Transmission
+    // ─────────────────────────────────────────────────────────────────────────
+    if (tdmaScheduler.shouldTransmitNow()) {
+        if (primaryTxThisSlot < 1) {
+            totalTxAttempts++;
+
+            if (transmit()) {
+                successfulTx++;
+                primaryTxThisSlot++;
+
+                // Small delay after primary transmission
+                delay(100);
+
+                // Now transmit any queued forwards during remaining slot time
+                transmitQueuedForwards(tdmaScheduler.getSlotEnd());
+            }
+        }
+        tdmaScheduler.markTransmissionComplete();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Display Management
+    // ─────────────────────────────────────────────────────────────────────────
+    
+    // Check for display state timeout
+    if (currentDisplay != DISPLAY_WAITING) {
+        if (now - displayStateStart >= DISPLAY_TIME_MS) {
+            setDisplayState(DISPLAY_WAITING);
+        }
+    }
+
+    // Regular display refresh
+    if (now - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL_MS) {
+        updateDisplay();
+        lastDisplayUpdate = now;
+    }
+
+    // Handle web dashboard (use lite version for AP mode)
+    if (!WIFI_USE_STATION_MODE) {
+        handleWebDashboardLite();
+    } else {
+        handleWebDashboard();
+    }
+
+    // Small delay to prevent tight loop
+    delay(5);
 }

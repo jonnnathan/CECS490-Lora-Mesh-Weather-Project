@@ -1,0 +1,2369 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LoRa Mesh Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- vis.js for network topology visualization -->
+    <script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
+
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --bg-page: #f1f5f9;
+            --bg-card: #ffffff;
+            --text-primary: #0f172a;
+            --text-secondary: #64748b;
+            --border: #e2e8f0;
+            --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        body {
+            font-family: 'IBM Plex Sans', -apple-system, system-ui, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: var(--bg-page);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            padding: 20px 0;
+            box-shadow: var(--shadow-sm);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            max-width: 100%;
+            margin: 0 auto;
+            padding: 0 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 32px;
+        }
+
+        .header h1 {
+            color: var(--text-primary);
+            font-size: 1.5rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 0;
+        }
+
+        .logo {
+            width: 6px;
+            height: 28px;
+            background: var(--primary);
+            border-radius: 3px;
+        }
+
+        .stats {
+            display: flex;
+            gap: 32px;
+            flex-wrap: wrap;
+        }
+
+        .stat {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 500;
+        }
+
+        .stat-value {
+            color: var(--text-primary);
+            font-weight: 600;
+            font-size: 1.125rem;
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            background: var(--bg-page);
+            border: 1px solid var(--border);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--danger);
+        }
+
+        .status-dot.connected {
+            background: var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .tabs {
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            padding: 0 24px;
+        }
+
+        .tab {
+            padding: 16px 24px;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s ease;
+            font-weight: 500;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        .tab:hover {
+            color: var(--text-primary);
+            background: rgba(37, 99, 235, 0.04);
+        }
+
+        .tab.active {
+            border-bottom-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .content {
+            display: none;
+        }
+        .content.active {
+            display: block;
+        }
+        #mapContent, #heatmapContent {
+            position: relative;
+            height: calc(100vh - 160px);
+        }
+        #map, #heatmap {
+            width: 100%;
+            height: 100%;
+        }
+        #nodesContent, #historyContent, #consoleContent {
+            min-height: calc(100vh - 160px);
+        }
+        .node-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
+            gap: 24px;
+            padding: 24px;
+            width: 100%;
+        }
+
+        .node-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 24px;
+            transition: all 0.2s ease;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .node-card:hover {
+            box-shadow: var(--shadow-lg);
+            border-color: var(--primary);
+        }
+
+        .node-card.offline {
+            opacity: 0.6;
+            background: #fafafa;
+        }
+
+        .node-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .node-id {
+            font-size: 1.25em;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: -0.5px;
+        }
+
+        .node-status {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .node-status::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+        }
+
+        .node-status.online {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .node-status.online::before {
+            background: var(--success);
+        }
+
+        .node-status.offline {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .node-status.offline::before {
+            background: var(--danger);
+        }
+
+        .node-data {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .data-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            border-radius: 8px;
+            background: var(--bg-page);
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+
+        .data-item:hover {
+            border-color: var(--primary);
+            background: #f8fafc;
+        }
+
+        .data-label {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            font-weight: 500;
+            line-height: 1.2;
+        }
+
+        .data-value {
+            color: var(--text-primary);
+            font-weight: 600;
+            font-size: 1rem;
+            line-height: 1.2;
+            text-align: right;
+        }
+
+        .signal-bar {
+            display: flex;
+            gap: 3px;
+            align-items: flex-end;
+            height: 20px;
+        }
+
+        .signal-bar div {
+            width: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            transition: all 0.2s ease;
+        }
+
+        .signal-bar div.active {
+            background: var(--primary);
+        }
+
+        .legend {
+            position: absolute;
+            bottom: 24px;
+            left: 24px;
+            background: var(--bg-card);
+            padding: 16px;
+            border-radius: 8px;
+            z-index: 1000;
+            border: 1px solid var(--border);
+            font-size: 0.875rem;
+            box-shadow: var(--shadow-lg);
+        }
+
+        .legend-title {
+            font-weight: 700;
+            margin-bottom: 12px;
+            color: var(--text-primary);
+            font-size: 1rem;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+            font-size: 0.8125rem;
+        }
+
+        .legend-marker {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            border: 2px solid var(--bg-card);
+        }
+
+        .legend-line {
+            width: 28px;
+            margin-right: 8px;
+            height: 2px;
+        }
+
+        /* Hop count badge */
+        .hop-badge {
+            position: absolute;
+            top: -6px;
+            right: -6px;
+            background: #f59e0b;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            border: 2px solid white;
+            color: #000;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+
+        /* Custom marker styling */
+        .custom-marker {
+            transition: transform 0.2s ease;
+        }
+
+        .custom-marker:hover {
+            transform: scale(1.15);
+            z-index: 1000 !important;
+        }
+
+        /* Connection tooltip styling */
+        .connection-tooltip {
+            background: rgba(15, 23, 42, 0.95) !important;
+            border: 1px solid var(--primary) !important;
+            border-radius: 6px !important;
+            color: #e2e8f0 !important;
+            padding: 10px 12px !important;
+            font-size: 12px !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+        }
+
+        .connection-tooltip::before {
+            border-top-color: var(--primary) !important;
+        }
+
+        /* History tab styles */
+        .history-container {
+            padding: 24px;
+            width: 100%;
+        }
+
+        .history-header {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+
+        .history-header h2 {
+            color: var(--text-primary);
+            margin: 0;
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .node-selector {
+            padding: 10px 16px;
+            font-size: 0.875rem;
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        .chart-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));
+            gap: 20px;
+        }
+
+        .chart-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .chart-card h3 {
+            color: var(--text-primary);
+            margin-bottom: 16px;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .chart-frame {
+            width: 100%;
+            height: 260px;
+            border: none;
+            border-radius: 6px;
+            background: var(--bg-page);
+        }
+
+        .thingspeak-link {
+            display: inline-block;
+            margin-top: 16px;
+            padding: 8px 16px;
+            background: var(--primary);
+            border: none;
+            border-radius: 6px;
+            color: white;
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        /* Coverage Map Toolbar */
+        .heatmap-toolbar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--bg-card);
+            border-top: 1px solid var(--border);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            z-index: 1000;
+            flex-wrap: wrap;
+        }
+
+        .toolbar-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toolbar-label {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        .toolbar-range {
+            width: 150px;
+            accent-color: var(--primary);
+        }
+
+        .toolbar-value {
+            color: var(--text-primary);
+            font-weight: 600;
+            font-size: 0.8rem;
+            min-width: 45px;
+        }
+
+        .toolbar-divider {
+            width: 1px;
+            height: 24px;
+            background: var(--border);
+        }
+
+        .toolbar-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+        }
+
+        .toolbar-checkbox input {
+            accent-color: var(--primary);
+        }
+
+        /* Console Styles */
+        .console-container {
+            height: calc(100vh - 160px);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .console-toolbar {
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .console-btn {
+            padding: 8px 16px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--bg-card);
+            color: var(--text-primary);
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .console-btn:hover {
+            border-color: var(--primary);
+            background: var(--bg-page);
+        }
+
+        .console-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        .console-output {
+            flex: 1;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            padding: 16px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .console-line {
+            margin: 0;
+            padding: 2px 0;
+        }
+
+        .console-line.info { color: #569cd6; }
+        .console-line.success { color: #4ec9b0; }
+        .console-line.warning { color: #ce9178; }
+        .console-line.error { color: #f14c4c; }
+        .console-line.beacon { color: #dcdcaa; }
+        .console-line.data { color: #9cdcfe; }
+        .console-line.route { color: #c586c0; }
+        .console-line.box { color: #6a9955; }
+
+        /* Network Topology Styles */
+        .topology-container {
+            height: calc(100vh - 160px);
+            display: flex;
+            flex-direction: column;
+            padding: 0;
+        }
+
+        .topology-header {
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .topology-header h2 {
+            color: var(--text-primary);
+            margin: 0;
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .topology-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .topology-status {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            padding: 6px 12px;
+            background: var(--bg-page);
+            border-radius: 4px;
+        }
+
+        .topology-main {
+            flex: 1;
+            display: flex;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #topologyGraph {
+            flex: 1;
+            background: #1a1a2e;
+            min-height: 400px;
+        }
+
+        .topology-legend {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            background: var(--bg-card);
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            font-size: 0.875rem;
+            box-shadow: var(--shadow-lg);
+            max-width: 220px;
+            z-index: 100;
+        }
+
+        .topology-info {
+            background: var(--bg-card);
+            border-top: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .info-panel {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        .info-panel span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .info-panel strong {
+            color: var(--text-primary);
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .node-grid {
+                grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+                padding: 16px;
+            }
+            .stats {
+                gap: 16px;
+            }
+            .header-content {
+                flex-wrap: wrap;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <h1>
+                <div class="logo"></div>
+                LoRa Mesh Dashboard
+            </h1>
+            <div class="stats">
+                <div class="stat">
+                    <span class="stat-label">Uptime</span>
+                    <span class="stat-value" id="uptime">0:00:00</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Nodes Online</span>
+                    <span class="stat-value" id="nodesOnline">0/0</span>
+                </div>
+            </div>
+            <div class="connection-status">
+                <div class="status-dot" id="wsStatus"></div>
+                <span id="wsStatusText">Connecting...</span>
+            </div>
+        </div>
+    </header>
+
+    <nav class="tabs">
+        <div class="tab active" onclick="showTab('map')">Live Map</div>
+        <div class="tab" onclick="showTab('nodes')">Node Details</div>
+        <div class="tab" onclick="showTab('heatmap')">Coverage Map</div>
+        <div class="tab" onclick="showTab('history')">Historical Data</div>
+        <div class="tab" onclick="showTab('topology')">Network Topology</div>
+        <div class="tab" onclick="showTab('console')">Serial Console</div>
+    </nav>
+
+    <div id="mapContent" class="content active">
+        <div id="map"></div>
+        <div class="legend">
+            <div class="legend-title">Map Legend</div>
+            <div class="legend-item">
+                <div class="legend-marker" style="background: #10b981;"></div>
+                Gateway (Node 1)
+            </div>
+            <div class="legend-item">
+                <div class="legend-marker" style="background: #2563eb;"></div>
+                Online Node
+            </div>
+            <div class="legend-item">
+                <div class="legend-marker" style="background: #ef4444;"></div>
+                Offline Node
+            </div>
+            <div style="margin-top: 12px; font-weight: 600; color: var(--text-primary);">Signal Strength</div>
+            <div class="legend-item">
+                <div class="legend-line" style="background: #10b981; height: 4px;"></div>
+                Excellent (&gt; -60 dBm)
+            </div>
+            <div class="legend-item">
+                <div class="legend-line" style="background: #2563eb; height: 3px;"></div>
+                Good (-60 to -70 dBm)
+            </div>
+            <div class="legend-item">
+                <div class="legend-line" style="background: #f59e0b; height: 2px; border: 1px dashed #f59e0b;"></div>
+                Fair (-70 to -80 dBm)
+            </div>
+            <div class="legend-item">
+                <div class="legend-line" style="background: #ea580c; height: 2px; border: 1px dashed #ea580c;"></div>
+                Weak (-80 to -90 dBm)
+            </div>
+            <div class="legend-item">
+                <div class="legend-line" style="background: #ef4444; height: 1px; border: 1px dashed #ef4444;"></div>
+                Very Weak (&lt; -90 dBm)
+            </div>
+            <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px;">
+                <div class="legend-item">
+                    <div style="background: #f59e0b; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; border: 2px solid white; margin-right: 8px;">2</div>
+                    Hop Count Badge
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="nodesContent" class="content">
+        <div class="node-grid" id="nodeGrid">
+            <p style="color: var(--text-secondary); padding: 24px;">Waiting for node data...</p>
+        </div>
+    </div>
+
+    <div id="heatmapContent" class="content">
+        <div id="heatmap" style="height: calc(100% - 50px);"></div>
+        <div class="heatmap-toolbar">
+            <div class="toolbar-group">
+                <span class="toolbar-label">Est. Range:</span>
+                <input type="range" id="heatmapRadius" class="toolbar-range" min="100" max="1000" value="500" step="50" onchange="updateRangeCircles(this.value)">
+                <span id="radiusValue" class="toolbar-value">500m</span>
+            </div>
+            <div class="toolbar-divider"></div>
+            <label class="toolbar-checkbox">
+                <input type="checkbox" id="showNodes" checked onchange="toggleNodes()">
+                <span class="toolbar-label">Node Labels</span>
+            </label>
+            <div class="toolbar-divider"></div>
+            <label class="toolbar-checkbox">
+                <input type="checkbox" id="showRangeCircles" checked onchange="toggleRangeCircles()">
+                <span class="toolbar-label">Range Circles</span>
+            </label>
+        </div>
+    </div>
+
+    <div id="historyContent" class="content">
+        <div class="history-container">
+            <div class="history-header">
+                <h2>Historical Data</h2>
+                <select id="historyNodeSelect" class="node-selector" onchange="updateHistoryCharts()">
+                    <option value="2">Node 2</option>
+                    <option value="3">Node 3</option>
+                    <option value="4">Node 4</option>
+                    <option value="5">Node 5</option>
+                </select>
+            </div>
+            <div class="chart-grid" id="chartGrid"></div>
+        </div>
+    </div>
+
+    <div id="topologyContent" class="content">
+        <div class="topology-container">
+            <div class="topology-header">
+                <h2>Network Topology</h2>
+                <div class="topology-controls">
+                    <button class="console-btn" onclick="refreshTopology()">Refresh</button>
+                    <button class="console-btn" onclick="fitTopologyGraph()">Fit View</button>
+                    <button class="console-btn" id="layoutToggleBtn" onclick="toggleLayout()">Force Layout</button>
+                    <span class="topology-status" id="topologyStatus">Waiting for data...</span>
+                </div>
+            </div>
+            <div class="topology-main">
+                <div id="topologyGraph"></div>
+                <div class="topology-legend">
+                    <div class="legend-title">Legend</div>
+                    <div class="legend-item">
+                        <div class="legend-marker" style="background: #10b981;"></div>
+                        Gateway (GPS Source)
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-marker" style="background: #2563eb;"></div>
+                        Online Node (GPS)
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-marker" style="background: #f59e0b;"></div>
+                        Online Node (Network Time)
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-marker" style="background: #6b7280;"></div>
+                        No Time Source
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-marker" style="background: #ef4444;"></div>
+                        Offline Node
+                    </div>
+                    <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px;">
+                        <div class="legend-item">
+                            <div class="legend-line" style="background: #10b981; height: 3px;"></div>
+                            Strong Signal (&gt;-70 dBm)
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-line" style="background: #f59e0b; height: 2px;"></div>
+                            Medium Signal (-70 to -85 dBm)
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-line" style="background: #ef4444; height: 1px;"></div>
+                            Weak Signal (&lt;-85 dBm)
+                        </div>
+                    </div>
+                    <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px;">
+                        <small style="color: var(--text-secondary);">
+                            Node positions represent hop distance from gateway.<br>
+                            Lower = fewer hops to reach gateway.
+                        </small>
+                    </div>
+                </div>
+            </div>
+            <div class="topology-info">
+                <div class="info-panel" id="topologyInfo">
+                    <span>Click a node or edge for details</span>
+                </div>
+                <div class="info-panel" id="topologyStats">
+                    <span>Nodes: <strong id="topoNodeCount">0</strong></span>
+                    <span>Edges: <strong id="topoEdgeCount">0</strong></span>
+                    <span>Max Hops: <strong id="topoMaxHops">0</strong></span>
+                    <span>History: <strong id="topoHistoryCount">0</strong> snapshots</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="consoleContent" class="content">
+        <div class="console-container">
+            <div class="console-toolbar">
+                <button class="console-btn active" id="autoScrollBtn" onclick="toggleAutoScroll()">Auto-scroll</button>
+                <button class="console-btn" onclick="clearConsole()">Clear</button>
+                <button class="console-btn" onclick="copyConsole()">Copy All</button>
+                <span style="margin-left: auto; color: var(--text-secondary); font-size: 0.875rem;">
+                    <span id="lineCount">0</span> lines
+                </span>
+            </div>
+            <div class="console-output" id="consoleOutput"></div>
+        </div>
+    </div>
+
+    <script>
+        // ═══════════════════════════════════════════════════════════════════════
+        // Configuration
+        // ═══════════════════════════════════════════════════════════════════════
+
+        const WS_URL = 'ws://localhost:8081';
+        const GATEWAY_NODE_ID = 1;
+
+        // ThingSpeak channels
+        const thingspeakChannels = {
+            2: { id: 3194362, readKey: 'DZ7L3266JBJ0TITC' },
+            3: { id: 3194371, readKey: 'HZFT8OH0W6CI6BXJ' },
+            4: { id: 3194372, readKey: '3LOL0G23XL9SYF6F' },
+            5: { id: 3194374, readKey: 'UEF28CAKQ0OUGYX8' }
+        };
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // State
+        // ═══════════════════════════════════════════════════════════════════════
+
+        let ws = null;
+        let nodesData = {};
+        let gatewayData = {};
+        let meshStats = {};
+        let map = null;
+        let heatmapMap = null;
+        let markers = {};
+        let connectionLines = {};
+        let rangeCircles = {};
+        let heatmapMarkers = {};
+        let mapInitialized = false;
+        let gatewayCenteredOnce = false;  // Track if we've centered on gateway
+        let heatmapInitialized = false;
+        let rangeRadius = 500;
+        let showCircles = true;
+        let autoScroll = true;
+        let consoleLines = 0;
+        const MAX_CONSOLE_LINES = 2000;
+        let localUptimeStart = Date.now();  // Track uptime locally as fallback
+        let lastKnownUptime = 0;  // Last uptime received from ESP32
+
+        // Topology visualization state
+        let topologyNetwork = null;
+        let topologyNodes = null;  // Persistent vis.js DataSet for nodes
+        let topologyEdges = null;  // Persistent vis.js DataSet for edges
+        let topologyData = { nodes: [], edges: [] };
+        let topologyInitialized = false;
+        let topologyFirstLoad = true;  // Track first data load for auto-fit
+
+        // Performance optimization state
+        let currentTab = 'map';  // Track which tab is active (matches HTML default)
+        let lastMapUpdate = 0;
+        let lastTopologyUpdate = 0;
+        let lastHeatmapUpdate = 0;
+        // Note: mapInitialized is declared above with other map variables
+        const UPDATE_THROTTLE_MS = 500;  // Minimum ms between expensive updates
+        let pendingMapUpdate = false;
+        let pendingTopologyUpdate = false;
+        let pendingHeatmapUpdate = false;
+
+        // Batched update state (requestAnimationFrame)
+        let pendingRAF = false;
+        let nodeCardsNeedUpdate = false;
+        let lastNodesDataHash = '';
+
+        // Cached DOM elements (populated on DOMContentLoaded)
+        let cachedElements = {};
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Performance Helpers
+        // ═══════════════════════════════════════════════════════════════════════
+
+        // Simple hash for detecting node data changes
+        function computeNodesHash(nodes) {
+            // Quick hash: concatenate node IDs and key values
+            const keys = Object.keys(nodes).sort();
+            let hash = keys.length.toString();
+            for (const k of keys) {
+                const n = nodes[k];
+                hash += `|${k}:${n.temp}:${n.humidity}:${n.rssi}:${n.online}`;
+            }
+            return hash;
+        }
+
+        // Batch UI updates using requestAnimationFrame
+        function scheduleUIUpdate() {
+            if (pendingRAF) return;
+            pendingRAF = true;
+            requestAnimationFrame(() => {
+                pendingRAF = false;
+                updateHeader();
+                if (nodeCardsNeedUpdate) {
+                    nodeCardsNeedUpdate = false;
+                    updateNodeCards();
+                }
+            });
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // WebSocket Connection
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function connectWebSocket() {
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                document.getElementById('wsStatus').classList.add('connected');
+                document.getElementById('wsStatusText').textContent = 'Connected';
+                addConsoleLine('[WebSocket] Connected to serial bridge', 'success');
+            };
+
+            ws.onclose = () => {
+                document.getElementById('wsStatus').classList.remove('connected');
+                document.getElementById('wsStatusText').textContent = 'Disconnected';
+                addConsoleLine('[WebSocket] Disconnected. Reconnecting...', 'warning');
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (error) => {
+                addConsoleLine('[WebSocket] Error: ' + error.message, 'error');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleUpdate(data);
+                } catch (e) {
+                    // Not JSON, treat as raw serial data
+                    addConsoleLine(event.data);
+                }
+            };
+        }
+
+        function handleUpdate(data) {
+            if (data.type === 'serial') {
+                // Raw serial line from ESP32
+                addConsoleLine(data.line, classifyLine(data.line));
+                return;
+            }
+
+            // Update global state and detect changes
+            if (data.nodes) {
+                const newHash = computeNodesHash(data.nodes);
+                if (newHash !== lastNodesDataHash) {
+                    lastNodesDataHash = newHash;
+                    nodeCardsNeedUpdate = true;
+                }
+                nodesData = data.nodes;
+            }
+            if (data.gateway) gatewayData = data.gateway;
+            if (data.meshStats) meshStats = data.meshStats;
+
+            // Batch header and node card updates via requestAnimationFrame
+            scheduleUIUpdate();
+
+            // Throttled updates for expensive operations - only update visible tabs
+            const now = Date.now();
+
+            // Map update (only if map tab is visible)
+            if (currentTab === 'map') {
+                if (now - lastMapUpdate > UPDATE_THROTTLE_MS) {
+                    lastMapUpdate = now;
+                    updateMap();
+                } else {
+                    pendingMapUpdate = true;
+                }
+            }
+
+            // Heatmap update (only if heatmap tab is visible)
+            if (currentTab === 'heatmap' && heatmapMap) {
+                if (now - lastHeatmapUpdate > UPDATE_THROTTLE_MS) {
+                    lastHeatmapUpdate = now;
+                    updateHeatmap();
+                } else {
+                    pendingHeatmapUpdate = true;
+                }
+            }
+
+            // Topology update (only if topology tab is visible)
+            if (data.topology && currentTab === 'topology') {
+                if (now - lastTopologyUpdate > UPDATE_THROTTLE_MS) {
+                    lastTopologyUpdate = now;
+                    updateTopologyGraph(data.topology);
+                } else {
+                    pendingTopologyUpdate = true;
+                    topologyData = data.topology;  // Store for later
+                }
+            } else if (data.topology) {
+                // Store topology data even if not visible
+                topologyData = data.topology;
+            }
+        }
+
+        function classifyLine(line) {
+            if (line.includes('BEACON') || line.includes('beacon')) return 'beacon';
+            if (line.includes('ROUTE') || line.includes('Route')) return 'route';
+            if (line.includes('ERROR') || line.includes('FAILED') || line.includes('error')) return 'error';
+            if (line.includes('WARNING') || line.includes('⚠')) return 'warning';
+            if (line.includes('Node') && line.includes('received')) return 'data';
+            if (line.includes('╔') || line.includes('╚') || line.includes('║') || line.includes('─')) return 'box';
+            if (line.includes('OK') || line.includes('SUCCESS') || line.includes('✓')) return 'success';
+            return '';
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Console Functions
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function addConsoleLine(text, className = '') {
+            const output = document.getElementById('consoleOutput');
+            const line = document.createElement('div');
+            line.className = 'console-line' + (className ? ' ' + className : '');
+            line.textContent = text;
+            output.appendChild(line);
+
+            consoleLines++;
+            document.getElementById('lineCount').textContent = consoleLines;
+
+            // Limit lines
+            while (output.children.length > MAX_CONSOLE_LINES) {
+                output.removeChild(output.firstChild);
+                consoleLines--;
+            }
+
+            if (autoScroll) {
+                output.scrollTop = output.scrollHeight;
+            }
+        }
+
+        function toggleAutoScroll() {
+            autoScroll = !autoScroll;
+            document.getElementById('autoScrollBtn').classList.toggle('active', autoScroll);
+        }
+
+        function clearConsole() {
+            document.getElementById('consoleOutput').innerHTML = '';
+            consoleLines = 0;
+            document.getElementById('lineCount').textContent = '0';
+        }
+
+        function copyConsole() {
+            const text = document.getElementById('consoleOutput').innerText;
+            navigator.clipboard.writeText(text);
+            addConsoleLine('[Console] Copied to clipboard', 'success');
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Map Functions
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function initMap() {
+            map = L.map('map', {
+                preferCanvas: true  // Use canvas renderer for better performance
+            }).setView([33.7838, -118.1141], 15);
+            // CartoDB Positron tiles - faster than OSM, clean design
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                attribution: '© OpenStreetMap contributors, © CARTO',
+                maxZoom: 19,
+                subdomains: 'abcd'
+            }).addTo(map);
+        }
+
+        function initHeatmap() {
+            heatmapMap = L.map('heatmap', {
+                preferCanvas: true  // Use canvas renderer for better performance
+            }).setView([33.7838, -118.1141], 15);
+            // CartoDB Positron tiles - faster than OSM, clean design
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                attribution: '© OpenStreetMap contributors, © CARTO',
+                maxZoom: 19,
+                subdomains: 'abcd'
+            }).addTo(heatmapMap);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // RSSI Line Style Helper (5-level color coding)
+        // ═══════════════════════════════════════════════════════════════════════
+        function getRSSILineStyle(rssi, isOnline = true) {
+            let lineColor, lineWeight, dashArray, lineOpacity;
+
+            if (rssi > -60) {
+                // Excellent signal
+                lineColor = '#10b981';
+                lineWeight = 4;
+                dashArray = null;
+                lineOpacity = 0.8;
+            } else if (rssi > -70) {
+                // Good signal
+                lineColor = '#2563eb';
+                lineWeight = 3;
+                dashArray = null;
+                lineOpacity = 0.7;
+            } else if (rssi > -80) {
+                // Fair signal
+                lineColor = '#f59e0b';
+                lineWeight = 2;
+                dashArray = '10, 5';
+                lineOpacity = 0.6;
+            } else if (rssi > -90) {
+                // Weak signal
+                lineColor = '#ea580c';
+                lineWeight = 2;
+                dashArray = '5, 5';
+                lineOpacity = 0.5;
+            } else {
+                // Very weak
+                lineColor = '#ef4444';
+                lineWeight = 1;
+                dashArray = '3, 3';
+                lineOpacity = 0.4;
+            }
+
+            // Reduce opacity for offline nodes
+            if (!isOnline) {
+                lineOpacity = 0.25;
+            }
+
+            return {
+                color: lineColor,
+                weight: lineWeight,
+                opacity: lineOpacity,
+                dashArray: dashArray
+            };
+        }
+
+        function getSignalQuality(rssi) {
+            if (rssi > -60) return 'Excellent';
+            if (rssi > -70) return 'Good';
+            if (rssi > -80) return 'Fair';
+            if (rssi > -90) return 'Weak';
+            return 'Very Weak';
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Enhanced Map Update with Mesh Topology Visualization
+        // ═══════════════════════════════════════════════════════════════════════
+        function updateMap() {
+            if (!map) return;
+
+            let gatewayCoords = null;
+            let bounds = [];
+
+            // ─────────────────────────────────────────────────────────────────────
+            // First pass: Update all node markers with hop count badges
+            // ─────────────────────────────────────────────────────────────────────
+            for (const [id, node] of Object.entries(nodesData)) {
+                const lat = parseFloat(node.lat);
+                const lng = parseFloat(node.lng);
+
+                if (!lat || !lng || lat === 0 || lng === 0) continue;
+
+                const coords = [lat, lng];
+                bounds.push(coords);
+
+                const nodeId = parseInt(id);
+                const isGateway = nodeId === GATEWAY_NODE_ID;
+                if (isGateway) gatewayCoords = coords;
+
+                const isOnline = node.online !== false;
+
+                // Calculate hop count from hop distance
+                const hopCount = node.hopDistance || 0;
+
+                // Node color
+                let color = isGateway ? '#10b981' : (isOnline ? '#2563eb' : '#ef4444');
+
+                // Create enhanced icon with hop count badge
+                const hopBadge = (hopCount > 0 && !isGateway)
+                    ? `<div class="hop-badge">${hopCount}</div>`
+                    : '';
+
+                const iconHtml = `
+                    <div style="position:relative;">
+                        <div style="width:24px;height:24px;background:${color};border-radius:50%;border:3px solid white;box-shadow:0 2px 10px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;color:white;">
+                            ${nodeId}
+                        </div>
+                        ${hopBadge}
+                    </div>
+                `;
+
+                const icon = L.divIcon({
+                    className: 'custom-marker',
+                    html: iconHtml,
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12]
+                });
+
+                const hopText = hopCount === 0 ? 'Gateway (Direct)' : hopCount + ' hop' + (hopCount > 1 ? 's' : '');
+                const senderText = node.meshSenderId === 0 || node.meshSenderId === nodeId ? 'Direct' : 'Node ' + node.meshSenderId;
+
+                const popup = `
+                    <div style="font-family:Arial;min-width:180px;">
+                        <b style="color:${color};font-size:14px;">Node ${id}</b>${isGateway ? ' <span style="background:#10b981;color:white;padding:2px 6px;border-radius:10px;font-size:10px;">GATEWAY</span>' : ''}<br>
+                        <span style="color:${isOnline ? '#10b981' : '#ef4444'};font-size:12px;">● ${isOnline ? 'Online' : 'Offline'}</span>
+                        <hr style="border:none;border-top:1px solid #e2e8f0;margin:8px 0;">
+                        <div style="background:#f8fafc;padding:8px;border-radius:4px;margin-bottom:8px;">
+                            <small style="color:#64748b;font-weight:600;">MESH ROUTING</small><br>
+                            <b style="color:#f59e0b;">Hop Distance: ${hopText}</b><br>
+                            <span style="color:#64748b;">Via: ${senderText}</span><br>
+                            <span style="color:#64748b;">Source: Node ${node.meshSourceId || nodeId}</span><br>
+                            <span style="color:#64748b;">TTL: ${node.meshTtl || 0} remaining</span><br>
+                            <span style="color:#64748b;">Msg ID: #${node.meshMsgId || 0}</span>
+                        </div>
+                        <small style="color:#64748b;font-weight:600;">SENSOR DATA</small><br>
+                        Temp: ${node.temp || 'N/A'}°F<br>
+                        Humidity: ${node.humidity || 'N/A'}%<br>
+                        Pressure: ${node.pressure || 'N/A'} hPa<br>
+                        Satellites: ${node.satellites || 0}<br>
+                        Neighbors: ${node.neighborCount || 0} nodes<br>
+                        ${!isGateway ? `<hr style="border:none;border-top:1px solid #e2e8f0;margin:8px 0;"><small style="color:#64748b;font-weight:600;">SIGNAL</small><br>RSSI: ${node.rssi || 'N/A'} dBm (${getSignalQuality(node.rssi || -100)})<br>SNR: ${node.snr || 'N/A'} dB` : ''}
+                    </div>
+                `;
+
+                if (markers[id]) {
+                    markers[id].setLatLng(coords);
+                    markers[id].setIcon(icon);
+                    markers[id].setPopupContent(popup);
+                } else {
+                    markers[id] = L.marker(coords, {icon}).addTo(map).bindPopup(popup);
+                }
+            }
+
+            // Auto-center on gateway when it first appears
+            if (!gatewayCenteredOnce && gatewayCoords) {
+                map.setView(gatewayCoords, 16);  // Center on gateway with zoom level 16
+                gatewayCenteredOnce = true;
+                mapInitialized = true;
+            } else if (!mapInitialized && bounds.length > 0) {
+                // Fallback: fit all nodes if no gateway yet
+                map.fitBounds(bounds, {padding: [50, 50]});
+                mapInitialized = true;
+            }
+
+            // ─────────────────────────────────────────────────────────────────────
+            // Second pass: Draw mesh topology connections based on meshSenderId
+            // This shows actual forwarding paths, not just direct lines to gateway
+            // ─────────────────────────────────────────────────────────────────────
+            const drawnConnections = new Set(); // Prevent duplicate lines
+
+            // Remove old connection lines first
+            for (const lineId of Object.keys(connectionLines)) {
+                map.removeLayer(connectionLines[lineId]);
+                delete connectionLines[lineId];
+            }
+
+            for (const [id, node] of Object.entries(nodesData)) {
+                const lat = parseFloat(node.lat);
+                const lng = parseFloat(node.lng);
+                if (!lat || !lng || lat === 0 || lng === 0) continue;
+
+                const nodeId = parseInt(id);
+                const isOnline = node.online !== false;
+
+                // Get the sender ID (who forwarded this packet to gateway)
+                const senderId = node.meshSenderId || 0;
+
+                // Skip if no sender info or if this is the gateway
+                if (nodeId === GATEWAY_NODE_ID) continue;
+
+                // Determine which node to draw connection to
+                let targetId = senderId;
+
+                // If senderId is 0 or same as nodeId, this is direct to gateway
+                if (senderId === 0 || senderId === nodeId) {
+                    targetId = GATEWAY_NODE_ID;
+                }
+
+                // Find target node's coordinates
+                const targetNode = nodesData[targetId];
+                if (!targetNode) {
+                    // Fallback: draw to gateway if target not found
+                    if (gatewayCoords) {
+                        targetId = GATEWAY_NODE_ID;
+                    } else {
+                        continue;
+                    }
+                }
+
+                const targetLat = targetId === GATEWAY_NODE_ID && gatewayCoords
+                    ? gatewayCoords[0]
+                    : (targetNode ? parseFloat(targetNode.lat) : 0);
+                const targetLng = targetId === GATEWAY_NODE_ID && gatewayCoords
+                    ? gatewayCoords[1]
+                    : (targetNode ? parseFloat(targetNode.lng) : 0);
+
+                if (!targetLat || !targetLng || targetLat === 0 || targetLng === 0) continue;
+
+                // Create unique line identifier (bidirectional)
+                const lineKey = [Math.min(nodeId, targetId), Math.max(nodeId, targetId)].join('-');
+                if (drawnConnections.has(lineKey)) continue;
+                drawnConnections.add(lineKey);
+
+                const fromCoords = [lat, lng];
+                const toCoords = [targetLat, targetLng];
+                const lineId = 'mesh-' + lineKey;
+
+                // Get RSSI-based line style
+                const rssi = node.rssi || -100;
+                const lineStyle = getRSSILineStyle(rssi, isOnline);
+
+                // Create polyline with tooltip
+                connectionLines[lineId] = L.polyline([fromCoords, toCoords], lineStyle).addTo(map);
+
+                const signalQuality = getSignalQuality(rssi);
+                const tooltipContent = `
+                    <div style="text-align:center;">
+                        <b>Node ${nodeId} → ${targetId === GATEWAY_NODE_ID ? 'Gateway' : 'Node ' + targetId}</b><br>
+                        <span style="color:${lineStyle.color};">RSSI: ${rssi} dBm</span><br>
+                        <small>Signal: ${signalQuality}</small>
+                    </div>
+                `;
+
+                connectionLines[lineId].bindTooltip(tooltipContent, {
+                    permanent: false,
+                    direction: 'center',
+                    className: 'connection-tooltip'
+                });
+            }
+        }
+
+        function updateHeatmap() {
+            if (!heatmapMap) return;
+
+            // Clear old circles
+            for (let id in rangeCircles) {
+                heatmapMap.removeLayer(rangeCircles[id]);
+            }
+            rangeCircles = {};
+
+            let bounds = [];
+
+            for (const [id, node] of Object.entries(nodesData)) {
+                const lat = parseFloat(node.lat);
+                const lng = parseFloat(node.lng);
+                if (!lat || !lng || lat === 0 || lng === 0) continue;
+
+                bounds.push([lat, lng]);
+
+                if (showCircles) {
+                    const isGateway = parseInt(id) === GATEWAY_NODE_ID;
+                    const fillColor = isGateway ? '#10b981' : (node.online ? '#2563eb' : '#ef4444');
+                    const strokeColor = isGateway ? '#059669' : (node.online ? '#1d4ed8' : '#dc2626');
+
+                    const circle = L.circle([lat, lng], {
+                        radius: rangeRadius,
+                        fillColor: fillColor,
+                        fillOpacity: 0.15,
+                        color: strokeColor,
+                        weight: 2,
+                        opacity: 0.6,
+                        dashArray: '5, 5'
+                    }).addTo(heatmapMap);
+
+                    rangeCircles[id] = circle;
+                }
+            }
+
+            if (!heatmapInitialized && bounds.length > 0) {
+                heatmapMap.fitBounds(bounds, {padding: [100, 100]});
+                heatmapInitialized = true;
+            }
+
+            updateHeatmapMarkers();
+        }
+
+        function updateHeatmapMarkers() {
+            if (!heatmapMap) return;
+            const showNodesChecked = document.getElementById('showNodes').checked;
+
+            for (let id in heatmapMarkers) {
+                heatmapMap.removeLayer(heatmapMarkers[id]);
+            }
+            heatmapMarkers = {};
+
+            if (!showNodesChecked) return;
+
+            for (const [id, node] of Object.entries(nodesData)) {
+                const lat = parseFloat(node.lat);
+                const lng = parseFloat(node.lng);
+                if (!lat || !lng || lat === 0 || lng === 0) continue;
+
+                const isGateway = parseInt(id) === GATEWAY_NODE_ID;
+                const color = isGateway ? '#10b981' : (node.online ? '#2563eb' : '#ef4444');
+
+                const icon = L.divIcon({
+                    className: 'heatmap-label',
+                    html: `<div style="background:${color};color:white;padding:4px 8px;border-radius:4px;font-size:12px;font-weight:bold;white-space:nowrap;">Node ${id}${isGateway ? ' (GW)' : ''}</div>`,
+                    iconAnchor: [0, 0]
+                });
+
+                heatmapMarkers[id] = L.marker([lat, lng], {icon}).addTo(heatmapMap);
+            }
+        }
+
+        function updateRangeCircles(value) {
+            rangeRadius = parseInt(value);
+            document.getElementById('radiusValue').textContent = value + 'm';
+            updateHeatmap();
+        }
+
+        function toggleNodes() {
+            updateHeatmapMarkers();
+        }
+
+        function toggleRangeCircles() {
+            showCircles = document.getElementById('showRangeCircles').checked;
+            updateHeatmap();
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Network Topology Graph (vis.js)
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function initTopologyGraph() {
+            if (topologyInitialized) return;
+
+            const container = document.getElementById('topologyGraph');
+            if (!container) return;
+
+            // Create persistent DataSets (only once)
+            topologyNodes = new vis.DataSet([]);
+            topologyEdges = new vis.DataSet([]);
+
+            const options = {
+                nodes: {
+                    shape: 'dot',
+                    size: 25,
+                    font: {
+                        size: 14,
+                        color: '#ffffff',
+                        face: 'IBM Plex Sans, Arial, sans-serif',
+                        bold: {
+                            color: '#ffffff'
+                        }
+                    },
+                    borderWidth: 3,
+                    shadow: {
+                        enabled: true,
+                        color: 'rgba(0,0,0,0.3)',
+                        size: 10
+                    }
+                },
+                edges: {
+                    width: 2,
+                    smooth: {
+                        type: 'cubicBezier',
+                        forceDirection: 'vertical',
+                        roundness: 0.4
+                    },
+                    arrows: {
+                        to: { enabled: true, scaleFactor: 0.5 }
+                    },
+                    font: {
+                        size: 14,
+                        color: '#ffffff',
+                        strokeWidth: 4,
+                        strokeColor: '#1e293b',
+                        align: 'middle',
+                        background: '#334155'
+                    }
+                },
+                layout: {
+                    hierarchical: {
+                        enabled: true,
+                        direction: 'UD',  // Up-Down (gateway at top)
+                        sortMethod: 'directed',
+                        levelSeparation: 120,
+                        nodeSpacing: 150,
+                        treeSpacing: 200
+                    }
+                },
+                physics: {
+                    enabled: false,  // Disable for hierarchical layout
+                    hierarchicalRepulsion: {
+                        centralGravity: 0.0,
+                        springLength: 150,
+                        springConstant: 0.01,
+                        nodeDistance: 200
+                    }
+                },
+                interaction: {
+                    hover: true,
+                    tooltipDelay: 100,
+                    zoomView: true,
+                    dragView: true
+                }
+            };
+
+            topologyNetwork = new vis.Network(container, { nodes: topologyNodes, edges: topologyEdges }, options);
+
+            // Handle node click
+            topologyNetwork.on('click', function(params) {
+                if (params.nodes.length > 0) {
+                    const nodeId = params.nodes[0];
+                    showNodeInfo(nodeId);
+                } else if (params.edges.length > 0) {
+                    const edgeId = params.edges[0];
+                    showEdgeInfo(edgeId);
+                } else {
+                    document.getElementById('topologyInfo').innerHTML =
+                        '<span>Click a node or edge for details</span>';
+                }
+            });
+
+            topologyInitialized = true;
+            document.getElementById('topologyStatus').textContent = 'Graph initialized';
+        }
+
+        function updateTopologyGraph(data) {
+            if (!topologyNetwork) {
+                initTopologyGraph();
+            }
+            if (!topologyNetwork) return;
+
+            // Store topology data for reference
+            topologyData = data;
+
+            // Build vis.js nodes
+            const visNodes = [];
+            const visEdges = [];
+            let maxHops = 0;
+
+            if (data.nodes && data.nodes.length > 0) {
+                for (const node of data.nodes) {
+                    // Use nodeId (from Python) or id as fallback
+                    const nodeId = node.nodeId || node.id;
+                    const isGateway = nodeId === GATEWAY_NODE_ID;
+                    const hopLevel = node.hopDistance || 0;
+                    if (hopLevel > maxHops) maxHops = hopLevel;
+
+                    // Color based on time source and online status
+                    // Green = Gateway only, Blue = GPS, Orange = NET, Red = Offline
+                    let color, borderColor;
+                    if (!node.online) {
+                        color = '#ef4444';      // Red - offline
+                        borderColor = '#dc2626';
+                    } else if (isGateway) {
+                        color = '#10b981';      // Green - gateway only
+                        borderColor = '#059669';
+                    } else if (node.timeSource === 'GPS') {
+                        color = '#2563eb';      // Blue - GPS time source
+                        borderColor = '#1d4ed8';
+                    } else if (node.timeSource === 'NET') {
+                        color = '#f59e0b';      // Orange - Network time source
+                        borderColor = '#d97706';
+                    } else {
+                        color = '#6b7280';      // Gray - unknown/no time source
+                        borderColor = '#4b5563';
+                    }
+
+                    visNodes.push({
+                        id: nodeId,
+                        label: isGateway ? 'GW\n(Node ' + nodeId + ')' : 'Node ' + nodeId,
+                        level: hopLevel,  // For hierarchical layout
+                        color: {
+                            background: color,
+                            border: borderColor,
+                            highlight: {
+                                background: borderColor,
+                                border: '#ffffff'
+                            },
+                            hover: {
+                                background: borderColor,
+                                border: '#ffffff'
+                            }
+                        },
+                        size: isGateway ? 35 : 25,
+                        title: buildNodeTooltip(node, nodeId)
+                    });
+                }
+            }
+
+            if (data.edges && data.edges.length > 0) {
+                for (const edge of data.edges) {
+                    // Edge color based on RSSI
+                    let edgeColor, edgeWidth;
+                    const rssi = edge.rssi || -100;
+
+                    if (rssi > -70) {
+                        edgeColor = '#10b981';
+                        edgeWidth = 3;
+                    } else if (rssi > -85) {
+                        edgeColor = '#f59e0b';
+                        edgeWidth = 2;
+                    } else {
+                        edgeColor = '#ef4444';
+                        edgeWidth = 1;
+                    }
+
+                    // Arrow points Child → Parent (data flow direction)
+                    visEdges.push({
+                        id: edge.from + '-' + edge.to,
+                        from: edge.from,  // Child node (sender)
+                        to: edge.to,      // Parent node (receiver)
+                        color: {
+                            color: edgeColor,
+                            highlight: '#ffffff',
+                            hover: '#ffffff'
+                        },
+                        width: edgeWidth,
+                        label: rssi > -120 ? rssi + ' dBm' : '',
+                        title: buildEdgeTooltip(edge)
+                    });
+                }
+            }
+
+            // Efficiently update the network using persistent DataSets
+            // Get current node/edge IDs
+            const currentNodeIds = new Set(topologyNodes.getIds());
+            const currentEdgeIds = new Set(topologyEdges.getIds());
+            const newNodeIds = new Set(visNodes.map(n => n.id));
+            const newEdgeIds = new Set(visEdges.map(e => e.id));
+
+            // Remove nodes/edges that no longer exist
+            const nodesToRemove = [...currentNodeIds].filter(id => !newNodeIds.has(id));
+            const edgesToRemove = [...currentEdgeIds].filter(id => !newEdgeIds.has(id));
+            if (nodesToRemove.length > 0) topologyNodes.remove(nodesToRemove);
+            if (edgesToRemove.length > 0) topologyEdges.remove(edgesToRemove);
+
+            // Update/add nodes and edges (vis.js handles add vs update automatically)
+            topologyNodes.update(visNodes);
+            topologyEdges.update(visEdges);
+
+            // Auto-fit view on first data load only
+            if (topologyFirstLoad && visNodes.length > 0) {
+                topologyFirstLoad = false;
+                setTimeout(() => {
+                    topologyNetwork.fit({
+                        animation: {
+                            duration: 300,
+                            easingFunction: 'easeInOutQuad'
+                        }
+                    });
+                }, 100);
+            }
+
+            // Update stats
+            document.getElementById('topoNodeCount').textContent = visNodes.length;
+            document.getElementById('topoEdgeCount').textContent = visEdges.length;
+            document.getElementById('topoMaxHops').textContent = maxHops;
+            document.getElementById('topoHistoryCount').textContent = data.historyCount || 0;
+
+            const statusText = visNodes.length > 0
+                ? 'Updated: ' + new Date().toLocaleTimeString()
+                : 'Waiting for data...';
+            document.getElementById('topologyStatus').textContent = statusText;
+        }
+
+        function buildNodeTooltip(node, nodeId) {
+            const id = nodeId || node.nodeId || node.id;
+            const isGateway = id === GATEWAY_NODE_ID;
+            // Use plain text for better vis.js compatibility
+            let tooltip = `Node ${id}${isGateway ? ' (Gateway)' : ''}\n`;
+            tooltip += `━━━━━━━━━━━━━━━━━━━━\n`;
+            tooltip += `Status: ${node.online ? 'Online' : 'Offline'}\n`;
+            tooltip += `Time Source: ${node.timeSource || 'Unknown'}\n`;
+            tooltip += `Hop Distance: ${node.hopDistance || 0}\n`;
+            if (node.rssi) tooltip += `RSSI: ${node.rssi} dBm\n`;
+            if (node.parentNode) tooltip += `Parent: Node ${node.parentNode}\n`;
+            if (node.lastSeen) {
+                const lastSeen = new Date(node.lastSeen * 1000).toLocaleTimeString();
+                tooltip += `Last Seen: ${lastSeen}`;
+            }
+            return tooltip;
+        }
+
+        function buildEdgeTooltip(edge) {
+            // Use plain text for better vis.js compatibility
+            // Show as "Parent ← Child" (data flows from child to parent)
+            let tooltip = `Node ${edge.to} ← Node ${edge.from}\n`;
+            tooltip += `━━━━━━━━━━━━━━━━━━━━\n`;
+            if (edge.rssi) {
+                tooltip += `RSSI: ${edge.rssi} dBm\n`;
+                tooltip += `Signal: ${getSignalQuality(edge.rssi)}`;
+            }
+            return tooltip;
+        }
+
+        function showNodeInfo(nodeId) {
+            // Find node by nodeId or id
+            const node = topologyData.nodes?.find(n => (n.nodeId || n.id) === nodeId);
+            if (!node) return;
+
+            const isGateway = nodeId === GATEWAY_NODE_ID;
+            document.getElementById('topologyInfo').innerHTML = `
+                <span><strong>Node ${nodeId}</strong>${isGateway ? ' (Gateway)' : ''}</span>
+                <span>Status: ${node.online ? '🟢 Online' : '🔴 Offline'}</span>
+                <span>Time: ${node.timeSource || 'Unknown'}</span>
+                <span>Hops: ${node.hopDistance || 0}</span>
+                ${node.rssi ? '<span>RSSI: ' + node.rssi + ' dBm</span>' : ''}
+            `;
+        }
+
+        function showEdgeInfo(edgeId) {
+            const parts = edgeId.split('-');
+            if (parts.length !== 2) return;
+
+            const edge = topologyData.edges?.find(e =>
+                (e.from == parts[0] && e.to == parts[1]) ||
+                (e.from == parts[1] && e.to == parts[0])
+            );
+
+            if (!edge) return;
+
+            // Show as "Parent ← Child" (data flows from child to parent)
+            document.getElementById('topologyInfo').innerHTML = `
+                <span><strong>Link: Node ${edge.to} ← Node ${edge.from}</strong></span>
+                ${edge.rssi ? '<span>RSSI: ' + edge.rssi + ' dBm</span>' : ''}
+                ${edge.rssi ? '<span>Signal: ' + getSignalQuality(edge.rssi) + '</span>' : ''}
+            `;
+        }
+
+        function refreshTopology() {
+            // Request fresh topology data from server
+            fetch('http://localhost:8080/api/topology')
+                .then(res => res.json())
+                .then(data => {
+                    // REST API returns {timestamp, topology: {...}}, extract topology
+                    updateTopologyGraph(data.topology || data);
+                })
+                .catch(err => {
+                    console.error('Failed to fetch topology:', err);
+                    document.getElementById('topologyStatus').textContent = 'Fetch failed';
+                });
+        }
+
+        function fitTopologyGraph() {
+            if (topologyNetwork) {
+                topologyNetwork.fit({
+                    animation: {
+                        duration: 500,
+                        easingFunction: 'easeInOutQuad'
+                    }
+                });
+            }
+        }
+
+        // Track current layout mode: true = hierarchical, false = force-directed
+        let topologyHierarchicalLayout = true;
+
+        function toggleLayout() {
+            topologyHierarchicalLayout = !topologyHierarchicalLayout;
+            const btn = document.getElementById('layoutToggleBtn');
+
+            if (topologyNetwork) {
+                if (topologyHierarchicalLayout) {
+                    // Switch to hierarchical layout
+                    topologyNetwork.setOptions({
+                        layout: {
+                            hierarchical: {
+                                enabled: true,
+                                direction: 'UD',
+                                sortMethod: 'directed',
+                                levelSeparation: 120,
+                                nodeSpacing: 150,
+                                treeSpacing: 200
+                            }
+                        },
+                        physics: { enabled: false }
+                    });
+                    btn.textContent = 'Force Layout';
+                } else {
+                    // Switch to force-directed layout
+                    topologyNetwork.setOptions({
+                        layout: {
+                            hierarchical: { enabled: false }
+                        },
+                        physics: {
+                            enabled: true,
+                            solver: 'forceAtlas2Based',
+                            forceAtlas2Based: {
+                                gravitationalConstant: -50,
+                                centralGravity: 0.01,
+                                springLength: 150,
+                                springConstant: 0.08
+                            },
+                            stabilization: {
+                                enabled: true,
+                                iterations: 100
+                            }
+                        }
+                    });
+                    btn.textContent = 'Hierarchical';
+                }
+
+                // Re-fit the view after layout change
+                setTimeout(() => {
+                    topologyNetwork.fit({
+                        animation: {
+                            duration: 500,
+                            easingFunction: 'easeInOutQuad'
+                        }
+                    });
+                }, 300);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Topology History & Export
+        // ═══════════════════════════════════════════════════════════════════════
+
+        let historyMode = false;
+        let topologyHistory = [];
+        let currentHistoryIndex = 0;
+        let playbackInterval = null;
+
+        function toggleHistoryMode() {
+            historyMode = !historyMode;
+            const historyBar = document.getElementById('historyBar');
+
+            if (historyMode) {
+                historyBar.style.display = 'flex';
+                // Fetch history data
+                fetchTopologyHistory();
+            } else {
+                historyBar.style.display = 'none';
+                stopPlayback();
+                // Refresh to show live data
+                refreshTopology();
+            }
+        }
+
+        function fetchTopologyHistory() {
+            fetch('http://localhost:8080/api/topology/history')
+                .then(res => res.json())
+                .then(data => {
+                    topologyHistory = data.history || [];
+                    const slider = document.getElementById('historySlider');
+                    slider.max = Math.max(0, topologyHistory.length - 1);
+                    slider.value = topologyHistory.length - 1;
+                    currentHistoryIndex = topologyHistory.length - 1;
+                    updateHistoryDisplay();
+
+                    if (topologyHistory.length > 0) {
+                        loadHistorySnapshot(currentHistoryIndex);
+                    }
+                })
+                .catch(err => {
+                    console.error('Failed to fetch topology history:', err);
+                    document.getElementById('historyTimestamp').textContent = 'Failed to load history';
+                });
+        }
+
+        function loadHistorySnapshot(index) {
+            index = parseInt(index);
+            if (index < 0 || index >= topologyHistory.length) return;
+
+            currentHistoryIndex = index;
+            const snapshot = topologyHistory[index];
+
+            // Update the graph with historical data
+            updateTopologyGraph(snapshot.topology);
+            updateHistoryDisplay();
+        }
+
+        function updateHistoryDisplay() {
+            const slider = document.getElementById('historySlider');
+            slider.value = currentHistoryIndex;
+
+            document.getElementById('historyIndex').textContent =
+                `Snapshot ${currentHistoryIndex + 1} / ${topologyHistory.length}`;
+
+            if (topologyHistory[currentHistoryIndex]) {
+                const timestamp = new Date(topologyHistory[currentHistoryIndex].timestamp * 1000);
+                document.getElementById('historyTimestamp').textContent = timestamp.toLocaleString();
+            }
+        }
+
+        function playbackPrev() {
+            if (currentHistoryIndex > 0) {
+                loadHistorySnapshot(currentHistoryIndex - 1);
+            }
+        }
+
+        function playbackNext() {
+            if (currentHistoryIndex < topologyHistory.length - 1) {
+                loadHistorySnapshot(currentHistoryIndex + 1);
+            }
+        }
+
+        function playbackPlay() {
+            if (playbackInterval) {
+                stopPlayback();
+                return;
+            }
+
+            playbackInterval = setInterval(() => {
+                if (currentHistoryIndex < topologyHistory.length - 1) {
+                    loadHistorySnapshot(currentHistoryIndex + 1);
+                } else {
+                    stopPlayback();
+                }
+            }, 1000);  // 1 second per snapshot
+        }
+
+        function stopPlayback() {
+            if (playbackInterval) {
+                clearInterval(playbackInterval);
+                playbackInterval = null;
+            }
+        }
+
+        function exportTopology() {
+            const exportData = {
+                timestamp: new Date().toISOString(),
+                currentTopology: topologyData,
+                nodes: Object.keys(nodesData).map(id => ({
+                    id: parseInt(id),
+                    ...nodesData[id]
+                })),
+                meshStats: meshStats
+            };
+
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `mesh-topology-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            addConsoleLine('[Topology] Exported to JSON file', 'success');
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Node Cards
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function getSignalBars(rssi) {
+            const r = rssi || -120;
+            const bars = [
+                r > -100 ? 'active' : '',
+                r > -90 ? 'active' : '',
+                r > -80 ? 'active' : '',
+                r > -70 ? 'active' : '',
+                r > -60 ? 'active' : ''
+            ];
+            return `<div class="signal-bar">
+                <div style="height:4px" class="${bars[0]}"></div>
+                <div style="height:8px" class="${bars[1]}"></div>
+                <div style="height:12px" class="${bars[2]}"></div>
+                <div style="height:16px" class="${bars[3]}"></div>
+                <div style="height:20px" class="${bars[4]}"></div>
+            </div>`;
+        }
+
+        function formatTimeAgo(timestamp) {
+            if (!timestamp) return 'Never';
+            const now = Date.now() / 1000;  // Convert to seconds
+            const diff = now - timestamp;
+
+            if (diff < 5) return 'Just now';
+            if (diff < 60) return Math.floor(diff) + 's ago';
+            if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+            if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+            return Math.floor(diff / 86400) + 'd ago';
+        }
+
+        function updateNodeCards() {
+            const grid = document.getElementById('nodeGrid');
+            const sortedIds = Object.keys(nodesData).sort((a, b) => parseInt(a) - parseInt(b));
+
+            if (sortedIds.length === 0) {
+                grid.innerHTML = '<p style="color: var(--text-secondary); padding: 24px;">Waiting for node data...</p>';
+                return;
+            }
+
+            let html = '';
+            for (const id of sortedIds) {
+                const node = nodesData[id];
+                const isGateway = parseInt(id) === GATEWAY_NODE_ID;
+                const isOnline = node.online !== false;
+                const hopText = node.hopDistance === 0 ? 'Gateway' : node.hopDistance + ' hop' + (node.hopDistance > 1 ? 's' : '');
+                const lastSeenText = formatTimeAgo(node.lastUpdate);
+                const lastSeenColor = isOnline ? 'var(--text-secondary)' : 'var(--danger)';
+
+                html += `
+                    <div class="node-card ${isOnline ? '' : 'offline'}">
+                        <div class="node-header">
+                            <span class="node-id">Node ${id}${isGateway ? ' (Gateway)' : ''}</span>
+                            <span class="node-status ${isOnline ? 'online' : 'offline'}">${isOnline ? 'Online' : 'Offline'}</span>
+                        </div>
+                        <div style="font-size: 0.75rem; color: ${lastSeenColor}; margin-bottom: 12px;">
+                            Last seen: ${lastSeenText}
+                        </div>
+                        <div class="node-data">
+                            <div class="data-item">
+                                <span class="data-label">Temperature</span>
+                                <span class="data-value">${node.temp || 'N/A'}°F</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Humidity</span>
+                                <span class="data-value">${node.humidity || 'N/A'}%</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Pressure</span>
+                                <span class="data-value">${node.pressure || 'N/A'} hPa</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Altitude</span>
+                                <span class="data-value">${node.altitude || 'N/A'} m</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Satellites</span>
+                                <span class="data-value">${node.satellites || 0}</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Messages</span>
+                                <span class="data-value">${node.messageCount || 0}</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Mesh Msg ID</span>
+                                <span class="data-value">#${node.meshMsgId || 0}</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Hop Distance</span>
+                                <span class="data-value">${hopText}</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">TTL</span>
+                                <span class="data-value">${node.meshTtl || 0} hops</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Last Sender</span>
+                                <span class="data-value">${node.meshSenderId === 0 ? 'Self' : 'Node ' + node.meshSenderId}</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Neighbors</span>
+                                <span class="data-value">${node.neighborCount || 0} nodes</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Signal</span>
+                                <span class="data-value">${getSignalBars(node.rssi)}</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">RSSI</span>
+                                <span class="data-value">${node.rssi || 'N/A'} dBm</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">SNR</span>
+                                <span class="data-value">${node.snr || 'N/A'} dB</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            grid.innerHTML = html;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Header Stats
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function formatUptime(seconds) {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        }
+
+        function updateHeader() {
+            // Get uptime from gateway status, or from any node's data, or use local timer
+            let uptime = gatewayData.uptime;
+            if (!uptime) {
+                // Try to get uptime from node 1 (gateway) data
+                const gatewayNode = nodesData['1'];
+                if (gatewayNode && gatewayNode.uptime_sec) {
+                    uptime = gatewayNode.uptime_sec;
+                }
+            }
+            if (uptime) {
+                lastKnownUptime = uptime;
+                localUptimeStart = Date.now() - (uptime * 1000);
+            }
+            // Always show uptime (use local tracking if no data)
+            const currentUptime = Math.floor((Date.now() - localUptimeStart) / 1000);
+            document.getElementById('uptime').textContent = formatUptime(currentUptime);
+
+            let online = 0;
+            let total = Object.keys(nodesData).length;
+            for (const node of Object.values(nodesData)) {
+                if (node.online !== false) online++;
+            }
+            document.getElementById('nodesOnline').textContent = `${online}/${total}`;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // History Charts
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function updateHistoryCharts() {
+            const nodeId = document.getElementById('historyNodeSelect').value;
+            const channel = thingspeakChannels[nodeId];
+
+            if (!channel) {
+                document.getElementById('chartGrid').innerHTML = '<p>No ThingSpeak channel configured for this node.</p>';
+                return;
+            }
+
+            const charts = [
+                { field: 1, title: 'Temperature (°F)' },
+                { field: 2, title: 'Humidity (%)' },
+                { field: 3, title: 'Pressure (hPa)' },
+                { field: 6, title: 'RSSI (dBm)' }
+            ];
+
+            let html = '';
+            for (const chart of charts) {
+                html += `
+                    <div class="chart-card">
+                        <h3>${chart.title}</h3>
+                        <iframe class="chart-frame"
+                            src="https://thingspeak.com/channels/${channel.id}/charts/${chart.field}?bgcolor=%23f1f5f9&color=%232563eb&dynamic=true&results=60&type=line&api_key=${channel.readKey}">
+                        </iframe>
+                    </div>
+                `;
+            }
+
+            html += `
+                <div class="chart-card">
+                    <h3>View Full Channel</h3>
+                    <p style="color: var(--text-secondary); margin-bottom: 16px;">Access all historical data and export options on ThingSpeak.</p>
+                    <a href="https://thingspeak.com/channels/${channel.id}" target="_blank" class="thingspeak-link">
+                        Open ThingSpeak Channel
+                    </a>
+                </div>
+            `;
+
+            document.getElementById('chartGrid').innerHTML = html;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Tab Switching
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function showTab(tabName) {
+            try {
+                currentTab = tabName;  // Track active tab for performance optimization
+
+                // Use cached elements for better performance
+                const tabs = cachedElements.tabs || document.querySelectorAll('.tab');
+                const contents = cachedElements.contents || document.querySelectorAll('.content');
+
+                tabs.forEach(t => t.classList.remove('active'));
+                contents.forEach(c => c.classList.remove('active'));
+
+                const tab = document.querySelector(`.tab[onclick*="${tabName}"]`);
+                const content = document.getElementById(tabName + 'Content');
+
+                if (tab) tab.classList.add('active');
+                if (content) content.classList.add('active');
+
+            if (tabName === 'map') {
+                // Initialize map on first view if Leaflet is loaded
+                if (!mapInitialized && typeof L !== 'undefined') {
+                    initMap();
+                    mapInitialized = true;
+                }
+                if (map) {
+                    setTimeout(() => {
+                        map.invalidateSize();
+                        // Process any pending map updates
+                        if (pendingMapUpdate) {
+                            pendingMapUpdate = false;
+                            updateMap();
+                        }
+                    }, 100);
+                }
+            }
+            if (tabName === 'heatmap') {
+                if (!heatmapMap && typeof L !== 'undefined') initHeatmap();
+                if (heatmapMap) {
+                    setTimeout(() => {
+                        heatmapMap.invalidateSize();
+                        // Process any pending heatmap updates
+                        if (pendingHeatmapUpdate) {
+                            pendingHeatmapUpdate = false;
+                            updateHeatmap();
+                        }
+                    }, 100);
+                }
+            }
+            if (tabName === 'history') {
+                updateHistoryCharts();
+            }
+            if (tabName === 'topology') {
+                if (!topologyInitialized && typeof vis !== 'undefined') {
+                    initTopologyGraph();
+                }
+                // Reset first load flag so it centers when tab is opened
+                topologyFirstLoad = true;
+                // Process any pending topology updates or fetch fresh data
+                if (pendingTopologyUpdate && topologyData) {
+                    pendingTopologyUpdate = false;
+                    updateTopologyGraph(topologyData);
+                } else {
+                    refreshTopology();
+                }
+            }
+            } catch (err) {
+                console.error('Tab switch error:', err);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Initialize
+        // ═══════════════════════════════════════════════════════════════════════
+
+        document.addEventListener('DOMContentLoaded', () => {
+            try {
+                // Cache frequently accessed DOM elements
+                cachedElements = {
+                    wsStatus: document.getElementById('wsStatus'),
+                    wsStatusText: document.getElementById('wsStatusText'),
+                    uptime: document.getElementById('uptime'),
+                    nodesOnline: document.getElementById('nodesOnline'),
+                    nodeGrid: document.getElementById('nodeGrid'),
+                    consoleOutput: document.getElementById('consoleOutput'),
+                    lineCount: document.getElementById('lineCount'),
+                    tabs: document.querySelectorAll('.tab'),
+                    contents: document.querySelectorAll('.content')
+                };
+
+                // Initialize map (Leaflet is loaded synchronously)
+                if (typeof L !== 'undefined') {
+                    initMap();
+                    mapInitialized = true;
+                } else {
+                    console.error('Leaflet not loaded');
+                }
+
+                connectWebSocket();
+                addConsoleLine('Dashboard initialized. Waiting for serial data...', 'info');
+
+                // Update uptime display every second for smooth counting
+                setInterval(() => {
+                    const currentUptime = Math.floor((Date.now() - localUptimeStart) / 1000);
+                    if (cachedElements.uptime) {
+                        cachedElements.uptime.textContent = formatUptime(currentUptime);
+                    }
+                }, 1000);
+
+                // Periodically refresh node cards only for "last seen" times (less frequent)
+                setInterval(() => {
+                    if (Object.keys(nodesData).length > 0 && currentTab === 'nodes') {
+                        // Only refresh if viewing nodes tab
+                        nodeCardsNeedUpdate = true;
+                        scheduleUIUpdate();
+                    }
+                }, 10000);  // Reduced from 5s to 10s
+
+                // Periodically refresh heatmap if visible and has data
+                setInterval(() => {
+                    if (currentTab === 'heatmap' && heatmapMap && Object.keys(nodesData).length > 0) {
+                        updateHeatmap();
+                    }
+                }, 5000);
+            } catch (err) {
+                console.error('Initialization error:', err);
+            }
+        });
+    </script>
+</body>
+</html>
