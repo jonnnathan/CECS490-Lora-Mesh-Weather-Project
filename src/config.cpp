@@ -23,7 +23,7 @@ const char* WIFI_AP_PASSWORD = "mesh1234";       // Password (min 8 chars)
 // ║  Set to false to create Access Point (LoRa_Mesh)                         ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
-const bool WIFI_USE_STATION_MODE = true;          // false = Access Point (works offline), true = join WiFi (needs internet for map)
+const bool WIFI_USE_STATION_MODE = false;          // false = Access Point (works offline), true = join WiFi (needs internet for map)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
 // ║                    ENTERPRISE WIFI (eduroam) SUPPORT                      ║
@@ -48,8 +48,8 @@ const char* WIFI_STA_PASSWORD = "";  // Your hotspot password
 // ║  Change DEVICE_ID and DEVICE_NAME for each node                          ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
-const uint8_t DEVICE_ID = 1;
-const char* const DEVICE_NAME = "DEV1";
+const uint8_t DEVICE_ID = 3;
+const char* const DEVICE_NAME = "DEV3";
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
 // ║                         TIMEZONE CONFIGURATION                            ║
@@ -120,8 +120,16 @@ const char* THINGSPEAK_READ_KEYS[] = {
 };
 const bool THINGSPEAK_ENABLED = true;
 
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         SENSOR CONFIGURATION                              ║
+// ║  Enable/disable SHT30 and BMP180 sensors                                  ║
+// ║  Sensors use I2C bus on GPIO7 (SDA) and GPIO20 (SCL)                     ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-
+const bool SENSOR_SHT30_ENABLED = true;       // Temperature/humidity sensor
+const bool SENSOR_BMP180_ENABLED = true;      // Pressure/altitude sensor
+const unsigned long SENSOR_READ_INTERVAL_MS = 5000;  // Read sensors every 5 seconds
+const float SEA_LEVEL_PRESSURE_PA = 102000.0; // Adjusted for Long Beach ~62ft elevation + current weather (~1020 hPa)
 
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗

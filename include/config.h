@@ -43,6 +43,25 @@ extern const char* const DEVICE_NAME;
 extern const int8_t UTC_OFFSET_HOURS;  // e.g., -8 for PST, -5 for EST
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         SENSOR CONFIGURATION                              ║
+// ║  SHT30 and BMP180 on separate I2C bus from OLED                          ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+// Sensor enable flags (set to false to disable individual sensors)
+extern const bool SENSOR_SHT30_ENABLED;
+extern const bool SENSOR_BMP180_ENABLED;
+
+// Sensor I2C bus pins (separate from OLED which uses GPIO17/18)
+#define SENSOR_I2C_SDA      7
+#define SENSOR_I2C_SCL      20
+
+// Sensor reading interval (milliseconds)
+extern const unsigned long SENSOR_READ_INTERVAL_MS;
+
+// Sea level pressure for altitude calculation (Pa) - adjust for local conditions
+extern const float SEA_LEVEL_PRESSURE_PA;
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
 // ║                         NETWORK CONFIGURATION                             ║
 // ║  These must be #define because they're used as array sizes               ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝

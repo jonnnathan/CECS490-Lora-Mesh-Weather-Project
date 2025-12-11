@@ -172,6 +172,7 @@ const char* getTimeSourceString(TimeSource source) {
     switch (source) {
         case TIME_SOURCE_GPS:     return "GPS";
         case TIME_SOURCE_NETWORK: return "NET";
+        case TIME_SOURCE_MANUAL:  return "MANUAL";
         case TIME_SOURCE_NONE:
         default:                  return "NONE";
     }
@@ -218,5 +219,38 @@ void printNetworkTimeStatus() {
         Serial.println(F("  Waiting for beacon with GPS time..."));
     }
 
+    Serial.println(F("─────────────────────────────────────────────────────────────"));
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         MANUAL TIME SETTING                               ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+void setManualTime(uint8_t hour, uint8_t minute, uint8_t second) {
+    unsigned long now = millis();
+
+    // Validate input
+    if (hour > 23 || minute > 59 || second > 59) {
+        Serial.println(F("[NET-TIME] Invalid manual time - out of range"));
+        return;
+    }
+
+    // Store the manual time
+    networkTime.hour = hour;
+    networkTime.minute = minute;
+    networkTime.second = second;
+    networkTime.receivedAtMillis = now;
+    networkTime.lastUpdateTime = now;
+    networkTime.sourceNodeId = 0;      // 0 = manual/local
+    networkTime.hopCount = 0;          // 0 = highest priority (direct source)
+    networkTime.valid = true;
+
+    Serial.println(F(""));
+    Serial.println(F("╔═══════════════════════════════════════════════════════════╗"));
+    Serial.println(F("║               MANUAL TIME SET (TESTING MODE)              ║"));
+    Serial.println(F("╚═══════════════════════════════════════════════════════════╝"));
+    Serial.printf("  Time set to: %02d:%02d:%02d UTC\n", hour, minute, second);
+    Serial.println(F("  TDMA scheduling is now enabled!"));
+    Serial.println(F("  Note: This time will drift - GPS sync is more accurate"));
     Serial.println(F("─────────────────────────────────────────────────────────────"));
 }

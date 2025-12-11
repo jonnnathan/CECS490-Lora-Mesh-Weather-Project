@@ -99,6 +99,9 @@ mesh_stats: dict = {}
 # Connected WebSocket clients
 websocket_clients: Set = set()
 
+# Global serial port for sending commands
+serial_port: Optional[serial.Serial] = None
+
 # Last ThingSpeak upload time per node
 last_thingspeak_upload: Dict[int, float] = {}
 
@@ -262,12 +265,13 @@ def find_esp32_port() -> Optional[str]:
 
 async def read_serial(port: str, baud: int):
     """Read data from serial port, forward all lines to console, and process JSON."""
-    global nodes_data, gateway_data, mesh_stats
+    global nodes_data, gateway_data, mesh_stats, serial_port
 
     logger.info(f"Opening serial port {port} at {baud} baud...")
 
     try:
         ser = serial.Serial(port, baud, timeout=0.1)
+        serial_port = ser  # Store globally for sending commands
         logger.info(f"Serial port opened successfully")
     except serial.SerialException as e:
         logger.error(f"Failed to open serial port: {e}")
@@ -500,6 +504,52 @@ async def upload_to_thingspeak(node_id: int, data: dict):
 
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                         COMMAND HANDLING                                  ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+
+async def handle_client_command(data: dict, websocket):
+    """Handle commands from WebSocket clients."""
+    command = data.get('command')
+
+    if command == 'settime':
+        # Set time manually on ESP32 (for testing without GPS)
+        hour = data.get('hour', 0)
+        minute = data.get('minute', 0)
+        second = data.get('second', 0)
+
+        # Send command to ESP32 via serial
+        if serial_port and serial_port.is_open:
+            cmd = f"SETTIME {hour:02d}:{minute:02d}:{second:02d}\n"
+            try:
+                serial_port.write(cmd.encode('utf-8'))
+                logger.info(f"Sent time command to ESP32: {hour:02d}:{minute:02d}:{second:02d}")
+                await websocket.send(json.dumps({
+                    'type': 'command_response',
+                    'command': 'settime',
+                    'success': True,
+                    'message': f'Time set to {hour:02d}:{minute:02d}:{second:02d} UTC'
+                }))
+            except Exception as e:
+                logger.error(f"Failed to send time command: {e}")
+                await websocket.send(json.dumps({
+                    'type': 'command_response',
+                    'command': 'settime',
+                    'success': False,
+                    'error': str(e)
+                }))
+        else:
+            logger.warning("Serial port not available for command")
+            await websocket.send(json.dumps({
+                'type': 'command_response',
+                'command': 'settime',
+                'success': False,
+                'error': 'Serial port not connected'
+            }))
+    else:
+        logger.warning(f"Unknown command: {command}")
+
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║                         WEBSOCKET SERVER                                  ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
@@ -519,12 +569,16 @@ async def websocket_handler(websocket):
             'topology': get_topology_data()
         }))
 
-        # Keep connection alive
+        # Keep connection alive and handle commands
         async for message in websocket:
             # Handle any client messages (e.g., commands)
             try:
                 data = json.loads(message)
                 logger.debug(f"Received from client: {data}")
+
+                # Handle commands
+                if data.get('type') == 'command':
+                    await handle_client_command(data, websocket)
             except json.JSONDecodeError:
                 pass
 

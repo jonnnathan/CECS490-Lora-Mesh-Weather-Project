@@ -17,6 +17,7 @@
 #include "mesh_stats.h"
 #include "transmit_queue.h"
 #include "packet_handler.h"
+#include "network_time.h"  // For manual time setting
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
@@ -31,6 +32,7 @@ static unsigned long serverStartTime = 0;
 // Forward declarations
 void handleRoot();
 void handleData();
+void handleSetTime();
 void handleNotFound();
 String generateHTML();
 String generateJSON();
@@ -166,6 +168,7 @@ bool initWebDashboard() {
     // Setup web server routes
     server.on("/", handleRoot);
     server.on("/data", handleData);
+    server.on("/settime", handleSetTime);
     server.on("/test", []() {
         server.send(200, "text/html", "<html><body><h1>Server Working!</h1><p>Free heap: " + String(ESP.getFreeHeap()) + " bytes</p></body></html>");
     });
@@ -263,6 +266,41 @@ void handleData() {
     Serial.print(json.length());
     Serial.println(F(" bytes"));
     server.send(200, "application/json", json);
+}
+
+void handleSetTime() {
+    Serial.println(F("[HTTP] /settime - Manual time set request"));
+
+    // Check for required parameters: hour, minute, second
+    if (!server.hasArg("hour") || !server.hasArg("minute") || !server.hasArg("second")) {
+        server.send(400, "application/json", "{\"error\":\"Missing parameters. Required: hour, minute, second\"}");
+        return;
+    }
+
+    // Parse parameters
+    int hour = server.arg("hour").toInt();
+    int minute = server.arg("minute").toInt();
+    int second = server.arg("second").toInt();
+
+    // Validate ranges
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+        server.send(400, "application/json", "{\"error\":\"Invalid time. Hour: 0-23, Minute: 0-59, Second: 0-59\"}");
+        return;
+    }
+
+    // Set the manual time
+    setManualTime((uint8_t)hour, (uint8_t)minute, (uint8_t)second);
+
+    // Build response JSON
+    String response = "{\"success\":true,\"time\":\"";
+    if (hour < 10) response += "0";
+    response += String(hour) + ":";
+    if (minute < 10) response += "0";
+    response += String(minute) + ":";
+    if (second < 10) response += "0";
+    response += String(second) + "\",\"message\":\"Time set successfully. TDMA scheduling enabled.\"}";
+
+    server.send(200, "application/json", response);
 }
 
 void handleNotFound() {
@@ -962,6 +1000,19 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
                     <div class="stat-label">Nodes Online</div>
                     <div class="stat-value" id="nodesOnline">--</div>
                 </div>
+                <div class="stat">
+                    <div class="stat-label">Set Time (UTC)</div>
+                    <div style="display:flex;gap:4px;align-items:center;">
+                        <input type="number" id="setHour" min="0" max="23" placeholder="HH" style="width:45px;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:0.875rem;">
+                        <span>:</span>
+                        <input type="number" id="setMinute" min="0" max="59" placeholder="MM" style="width:45px;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:0.875rem;">
+                        <span>:</span>
+                        <input type="number" id="setSecond" min="0" max="59" placeholder="SS" style="width:45px;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:0.875rem;">
+                        <button onclick="setManualTime()" style="padding:4px 12px;background:var(--primary);color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;">Set</button>
+                        <button onclick="setCurrentTime()" style="padding:4px 8px;background:var(--success);color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;" title="Use current UTC time">Now</button>
+                    </div>
+                    <div id="timeStatus" style="font-size:0.7rem;color:var(--text-secondary);margin-top:2px;"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -1597,6 +1648,43 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
         }
         
         // Note: Initialization is done in the async IIFE above after online check completes
+
+        // Manual time setting functions
+        function setManualTime() {
+            const hour = document.getElementById('setHour').value;
+            const minute = document.getElementById('setMinute').value;
+            const second = document.getElementById('setSecond').value;
+
+            if (hour === '' || minute === '' || second === '') {
+                document.getElementById('timeStatus').textContent = 'Please enter hour, minute, and second';
+                document.getElementById('timeStatus').style.color = 'var(--danger)';
+                return;
+            }
+
+            fetch('/settime?hour=' + hour + '&minute=' + minute + '&second=' + second)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('timeStatus').textContent = 'Time set: ' + data.time + ' UTC';
+                        document.getElementById('timeStatus').style.color = 'var(--success)';
+                    } else {
+                        document.getElementById('timeStatus').textContent = data.error || 'Failed to set time';
+                        document.getElementById('timeStatus').style.color = 'var(--danger)';
+                    }
+                })
+                .catch(err => {
+                    document.getElementById('timeStatus').textContent = 'Error: ' + err.message;
+                    document.getElementById('timeStatus').style.color = 'var(--danger)';
+                });
+        }
+
+        function setCurrentTime() {
+            const now = new Date();
+            document.getElementById('setHour').value = now.getUTCHours();
+            document.getElementById('setMinute').value = now.getUTCMinutes();
+            document.getElementById('setSecond').value = now.getUTCSeconds();
+            setManualTime();
+        }
     </script>
 </body>
 </html>

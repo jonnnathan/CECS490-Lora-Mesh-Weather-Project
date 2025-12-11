@@ -26,7 +26,8 @@
 enum TimeSource : uint8_t {
     TIME_SOURCE_NONE = 0,       // No valid time available - cannot transmit
     TIME_SOURCE_GPS = 1,        // Using own GPS (best accuracy, ~1μs)
-    TIME_SOURCE_NETWORK = 2     // Using gateway beacon time (fallback, ~200-500ms)
+    TIME_SOURCE_NETWORK = 2,    // Using gateway beacon time (fallback, ~200-500ms)
+    TIME_SOURCE_MANUAL = 3      // Manually set via web interface (for testing)
 };
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
@@ -130,5 +131,15 @@ const char* getTimeSourceString(TimeSource source);
  * Print network time status to Serial (for debugging)
  */
 void printNetworkTimeStatus();
+
+/**
+ * Set time manually (for testing without GPS)
+ * This bypasses normal time source priority and forces the time.
+ *
+ * @param hour   Hour (0-23)
+ * @param minute Minute (0-59)
+ * @param second Second (0-59)
+ */
+void setManualTime(uint8_t hour, uint8_t minute, uint8_t second);
 
 #endif // NETWORK_TIME_H

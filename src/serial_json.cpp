@@ -29,6 +29,11 @@ void outputNodeDataJson(uint8_t nodeId, const FullReportMsg& report, float rssi,
     Serial.print(report.pressure_hPa);
     Serial.print(F(",\"altitude\":"));
     Serial.print(report.altitude_m);
+
+    // Sensor status (check FLAGS_SENSORS_OK for now, individual flags in future)
+    Serial.print(F(",\"sensorsOk\":"));
+    Serial.print((report.flags & FLAG_SENSORS_OK) ? F("true") : F("false"));
+
     Serial.print(F(",\"lat\":"));
     Serial.print(report.latitude_x1e6 / 1000000.0, 6);
     Serial.print(F(",\"lng\":"));

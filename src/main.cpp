@@ -18,6 +18,11 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <math.h>
+
+// Sensors
+#include "sht30.h"
+#include "bmp180.h"
 
 // Project modules
 #include "config.h"
@@ -48,6 +53,34 @@
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
 TDMAScheduler tdmaScheduler;
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         SENSOR OBJECTS                                    ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+// Second I2C bus for sensors (separate from OLED on Wire/GPIO17+18)
+TwoWire SensorWire = TwoWire(1);  // Use I2C bus 1
+
+// Sensor instances
+SHT30 sht30;
+BMP180 bmp180;
+
+// Sensor status flags
+bool sht30_ok = false;
+bool bmp180_ok = false;
+
+// Cached sensor readings (updated periodically)
+float sensor_tempF = 72.5f;         // Temperature in Fahrenheit
+float sensor_humidity = 45.0f;      // Humidity percentage
+float sensor_pressure_hPa = 1013.0f; // Pressure in hPa
+float sensor_altitude_m = 0.0f;     // Barometric altitude in meters
+
+// Sea level pressure calibration (auto-calibrated from GPS altitude)
+static float calibrated_sea_level_pa = SEA_LEVEL_PRESSURE_PA;  // Start with standard
+static bool sea_level_calibrated = false;
+
+// Timing for sensor reads
+static unsigned long lastSensorRead = 0;
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
 // ║                         STATISTICS                                        ║
@@ -83,18 +116,82 @@ static uint8_t primaryTxThisSlot = 0;
 static bool wasInSlot = false;
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         SENSOR READING                                    ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+void readSensors() {
+    // Read SHT30 (temperature and humidity)
+    if (SENSOR_SHT30_ENABLED && sht30_ok) {
+        if (sht30.read()) {
+            // Convert Celsius to Fahrenheit
+            float tempC = sht30.getTemperature();
+            sensor_tempF = tempC * 1.8f + 32.0f;
+            sensor_humidity = sht30.getHumidity();
+        } else {
+            Serial.println(F("[SENSOR] SHT30 read failed"));
+        }
+    }
+
+    // Read BMP180 (pressure and altitude)
+    if (SENSOR_BMP180_ENABLED && bmp180_ok) {
+        float pressure_pa = bmp180.readPressure();
+        if (pressure_pa > 0) {
+            sensor_pressure_hPa = pressure_pa / 100.0f;  // Convert Pa to hPa
+
+            // Auto-calibrate sea level pressure using GPS altitude
+            // Formula: P0 = P / (1 - altitude/44330)^5.255
+            if (g_location_valid && gps.altitude.isValid()) {
+                float gps_alt = gps.altitude.meters();
+                // Only calibrate if GPS altitude is reasonable (-500m to 10000m)
+                if (gps_alt > -500.0f && gps_alt < 10000.0f) {
+                    float ratio = 1.0f - (gps_alt / 44330.0f);
+                    if (ratio > 0.0f) {
+                        float new_sea_level = pressure_pa / powf(ratio, 5.255f);
+                        // Sanity check: sea level pressure should be 950-1050 hPa
+                        if (new_sea_level > 95000.0f && new_sea_level < 105000.0f) {
+                            // Smooth the calibration to avoid jumps
+                            if (!sea_level_calibrated) {
+                                calibrated_sea_level_pa = new_sea_level;
+                                sea_level_calibrated = true;
+                                Serial.print(F("[SENSOR] Sea level pressure calibrated from GPS: "));
+                                Serial.print(new_sea_level / 100.0f, 1);
+                                Serial.println(F(" hPa"));
+                            } else {
+                                // Exponential moving average (slow adaptation)
+                                calibrated_sea_level_pa = calibrated_sea_level_pa * 0.95f + new_sea_level * 0.05f;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Calculate altitude using calibrated sea level pressure
+            sensor_altitude_m = bmp180.readAltitude(calibrated_sea_level_pa);
+
+            // If SHT30 is not available, use BMP180 temperature
+            if (!SENSOR_SHT30_ENABLED || !sht30_ok) {
+                float tempC = bmp180.readTemperature();
+                sensor_tempF = tempC * 1.8f + 32.0f;
+            }
+        } else {
+            Serial.println(F("[SENSOR] BMP180 read failed"));
+        }
+    }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
 // ║                         BUILD FULL REPORT                                 ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
 void buildFullReport(FullReportMsg& report) {
     // Clear the struct
     memset(&report, 0, sizeof(report));
-    
-    // Environmental sensors (placeholder values for now - add real sensors later)
-    report.temperatureF_x10 = 725;      // 72.5°F placeholder
-    report.humidity_x10 = 450;          // 45.0% placeholder
-    report.pressure_hPa = 1013;         // 1013 hPa placeholder
-    report.altitude_m = 100;            // 100m placeholder
+
+    // Environmental sensors - use real sensor values
+    report.temperatureF_x10 = (int16_t)(sensor_tempF * 10.0f);
+    report.humidity_x10 = (uint16_t)(sensor_humidity * 10.0f);
+    report.pressure_hPa = (uint16_t)sensor_pressure_hPa;
+    report.altitude_m = (int16_t)sensor_altitude_m;
     
     // GPS data
     if (g_location_valid) {
@@ -446,6 +543,46 @@ void setup() {
     initGPS();
     printRow("GPS Module", "OK - Waiting for fix");
 
+    // Initialize sensor I2C bus and sensors
+    printDivider();
+    printRow("Sensor I2C Bus", "GPIO" + String(SENSOR_I2C_SDA) + "/GPIO" + String(SENSOR_I2C_SCL));
+    SensorWire.begin(SENSOR_I2C_SDA, SENSOR_I2C_SCL);
+
+    // Initialize SHT30
+    if (SENSOR_SHT30_ENABLED) {
+        sht30_ok = sht30.begin(&SensorWire);
+        if (sht30_ok) {
+            printRow("SHT30 (Temp/Hum)", "OK @ 0x44");
+            // Initial read
+            if (sht30.read()) {
+                sensor_tempF = sht30.getTemperature() * 1.8f + 32.0f;
+                sensor_humidity = sht30.getHumidity();
+            }
+        } else {
+            printRow("SHT30 (Temp/Hum)", "NOT FOUND");
+        }
+    } else {
+        printRow("SHT30 (Temp/Hum)", "Disabled");
+    }
+
+    // Initialize BMP180
+    if (SENSOR_BMP180_ENABLED) {
+        bmp180_ok = bmp180.begin(&SensorWire);
+        if (bmp180_ok) {
+            printRow("BMP180 (Press/Alt)", "OK @ 0x77");
+            // Initial read (uses standard pressure until GPS calibration)
+            float pressure_pa = bmp180.readPressure();
+            if (pressure_pa > 0) {
+                sensor_pressure_hPa = pressure_pa / 100.0f;
+                sensor_altitude_m = bmp180.readAltitude(calibrated_sea_level_pa);
+            }
+        } else {
+            printRow("BMP180 (Press/Alt)", "NOT FOUND");
+        }
+    } else {
+        printRow("BMP180 (Press/Alt)", "Disabled");
+    }
+
     // Initialize LoRa
     if (initLoRa()) {
         printRow("LoRa Radio", "OK");
@@ -526,11 +663,55 @@ void setup() {
 }
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         SERIAL COMMAND PROCESSING                         ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+static char serialCmdBuffer[64];
+static uint8_t serialCmdIndex = 0;
+
+void processSerialCommands() {
+    while (Serial.available() > 0) {
+        char c = Serial.read();
+
+        if (c == '\n' || c == '\r') {
+            if (serialCmdIndex > 0) {
+                serialCmdBuffer[serialCmdIndex] = '\0';
+
+                // Parse command: SETTIME HH:MM:SS
+                if (strncmp(serialCmdBuffer, "SETTIME ", 8) == 0) {
+                    int hour, minute, second;
+                    if (sscanf(serialCmdBuffer + 8, "%d:%d:%d", &hour, &minute, &second) == 3) {
+                        if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59) {
+                            setManualTime((uint8_t)hour, (uint8_t)minute, (uint8_t)second);
+                        } else {
+                            Serial.println(F("[CMD] Invalid time range"));
+                        }
+                    } else {
+                        Serial.println(F("[CMD] Invalid SETTIME format. Use: SETTIME HH:MM:SS"));
+                    }
+                }
+                // Add more commands here as needed
+
+                serialCmdIndex = 0;
+            }
+        } else if (serialCmdIndex < sizeof(serialCmdBuffer) - 1) {
+            serialCmdBuffer[serialCmdIndex++] = c;
+        }
+    }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
 // ║                         MAIN LOOP                                         ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
 void loop() {
     unsigned long now = millis();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Serial Command Processing (for testing - e.g., SETTIME command)
+    // ─────────────────────────────────────────────────────────────────────────
+    processSerialCommands();
+
     // ─────────────────────────────────────────────────────────────────────────
     // GPS Processing (High Priority)
     // ─────────────────────────────────────────────────────────────────────────
@@ -565,6 +746,13 @@ void loop() {
     if (now - lastGPSStatusPrint >= GPS_STATUS_INTERVAL_MS) {
         printGPSStatusLine();
         lastGPSStatusPrint = now;
+    }
+
+    // Sensor reading (if sensors enabled)
+    if ((SENSOR_SHT30_ENABLED || SENSOR_BMP180_ENABLED) &&
+        (now - lastSensorRead >= SENSOR_READ_INTERVAL_MS)) {
+        readSensors();
+        lastSensorRead = now;
     }
 
     // Node timeout checks

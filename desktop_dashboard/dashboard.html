@@ -710,6 +710,19 @@
                     <span class="stat-label">Nodes Online</span>
                     <span class="stat-value" id="nodesOnline">0/0</span>
                 </div>
+                <div class="stat">
+                    <span class="stat-label">Set Time (UTC) - Testing</span>
+                    <div style="display:flex;gap:4px;align-items:center;">
+                        <input type="number" id="setHour" min="0" max="23" placeholder="HH" style="width:45px;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:0.875rem;">
+                        <span>:</span>
+                        <input type="number" id="setMinute" min="0" max="59" placeholder="MM" style="width:45px;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:0.875rem;">
+                        <span>:</span>
+                        <input type="number" id="setSecond" min="0" max="59" placeholder="SS" style="width:45px;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:0.875rem;">
+                        <button onclick="sendSetTime()" style="padding:4px 12px;background:var(--primary);color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;">Set</button>
+                        <button onclick="sendCurrentTime()" style="padding:4px 8px;background:var(--success);color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;" title="Use current UTC time">Now</button>
+                    </div>
+                    <div id="timeStatus" style="font-size:0.7rem;color:var(--text-secondary);margin-top:2px;"></div>
+                </div>
             </div>
             <div class="connection-status">
                 <div class="status-dot" id="wsStatus"></div>
@@ -2364,6 +2377,59 @@
                 console.error('Initialization error:', err);
             }
         });
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Manual Time Setting (for testing without GPS)
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function sendSetTime() {
+            const hour = document.getElementById('setHour').value;
+            const minute = document.getElementById('setMinute').value;
+            const second = document.getElementById('setSecond').value;
+            const statusEl = document.getElementById('timeStatus');
+
+            if (hour === '' || minute === '' || second === '') {
+                statusEl.textContent = 'Please enter hour, minute, and second';
+                statusEl.style.color = 'var(--danger)';
+                return;
+            }
+
+            // Validate ranges
+            const h = parseInt(hour), m = parseInt(minute), s = parseInt(second);
+            if (h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 59) {
+                statusEl.textContent = 'Invalid time range';
+                statusEl.style.color = 'var(--danger)';
+                return;
+            }
+
+            // Send via WebSocket to serial bridge
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const timeStr = String(h).padStart(2, '0') + ':' +
+                               String(m).padStart(2, '0') + ':' +
+                               String(s).padStart(2, '0');
+                ws.send(JSON.stringify({
+                    type: 'command',
+                    command: 'settime',
+                    hour: h,
+                    minute: m,
+                    second: s
+                }));
+                statusEl.textContent = 'Sent: ' + timeStr + ' UTC';
+                statusEl.style.color = 'var(--success)';
+                addConsoleLine('[CMD] Set time: ' + timeStr + ' UTC', 'info');
+            } else {
+                statusEl.textContent = 'WebSocket not connected';
+                statusEl.style.color = 'var(--danger)';
+            }
+        }
+
+        function sendCurrentTime() {
+            const now = new Date();
+            document.getElementById('setHour').value = now.getUTCHours();
+            document.getElementById('setMinute').value = now.getUTCMinutes();
+            document.getElementById('setSecond').value = now.getUTCSeconds();
+            sendSetTime();
+        }
     </script>
 </body>
 </html>
