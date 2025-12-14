@@ -23,6 +23,7 @@
 // Sensors
 #include "sht30.h"
 #include "bmp180.h"
+#include "SensorManager.h"
 
 // Project modules
 #include "config.h"
@@ -47,6 +48,10 @@
 #include "gradient_routing.h"
 #include "network_time.h"
 
+// System utilities
+#include "Logger.h"
+#include "MeshContext.h"
+
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
 // ║                         GLOBAL OBJECTS                                    ║
@@ -55,29 +60,16 @@
 TDMAScheduler tdmaScheduler;
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║                         SENSOR OBJECTS                                    ║
+// ║                         SENSOR MANAGER                                    ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
-// Second I2C bus for sensors (separate from OLED on Wire/GPIO17+18)
-TwoWire SensorWire = TwoWire(1);  // Use I2C bus 1
-
-// Sensor instances
-SHT30 sht30;
-BMP180 bmp180;
-
-// Sensor status flags
-bool sht30_ok = false;
-bool bmp180_ok = false;
-
-// Cached sensor readings (updated periodically)
-float sensor_tempF = 72.5f;         // Temperature in Fahrenheit
-float sensor_humidity = 45.0f;      // Humidity percentage
-float sensor_pressure_hPa = 1013.0f; // Pressure in hPa
-float sensor_altitude_m = 0.0f;     // Barometric altitude in meters
-
-// Sea level pressure calibration (auto-calibrated from GPS altitude)
-static float calibrated_sea_level_pa = SEA_LEVEL_PRESSURE_PA;  // Start with standard
-static bool sea_level_calibrated = false;
+/**
+ * @brief Central sensor manager instance.
+ *
+ * Manages SHT30 (temp/humidity) and BMP180 (pressure/altitude) sensors.
+ * Replaces individual sensor objects and globals with a clean encapsulated API.
+ */
+SensorManager sensorManager;
 
 // Timing for sensor reads
 static unsigned long lastSensorRead = 0;
@@ -120,62 +112,13 @@ static bool wasInSlot = false;
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
 void readSensors() {
-    // Read SHT30 (temperature and humidity)
-    if (SENSOR_SHT30_ENABLED && sht30_ok) {
-        if (sht30.read()) {
-            // Convert Celsius to Fahrenheit
-            float tempC = sht30.getTemperature();
-            sensor_tempF = tempC * 1.8f + 32.0f;
-            sensor_humidity = sht30.getHumidity();
-        } else {
-            Serial.println(F("[SENSOR] SHT30 read failed"));
-        }
-    }
+    // Update all sensors via the SensorManager
+    sensorManager.update();
 
-    // Read BMP180 (pressure and altitude)
-    if (SENSOR_BMP180_ENABLED && bmp180_ok) {
-        float pressure_pa = bmp180.readPressure();
-        if (pressure_pa > 0) {
-            sensor_pressure_hPa = pressure_pa / 100.0f;  // Convert Pa to hPa
-
-            // Auto-calibrate sea level pressure using GPS altitude
-            // Formula: P0 = P / (1 - altitude/44330)^5.255
-            if (g_location_valid && gps.altitude.isValid()) {
-                float gps_alt = gps.altitude.meters();
-                // Only calibrate if GPS altitude is reasonable (-500m to 10000m)
-                if (gps_alt > -500.0f && gps_alt < 10000.0f) {
-                    float ratio = 1.0f - (gps_alt / 44330.0f);
-                    if (ratio > 0.0f) {
-                        float new_sea_level = pressure_pa / powf(ratio, 5.255f);
-                        // Sanity check: sea level pressure should be 950-1050 hPa
-                        if (new_sea_level > 95000.0f && new_sea_level < 105000.0f) {
-                            // Smooth the calibration to avoid jumps
-                            if (!sea_level_calibrated) {
-                                calibrated_sea_level_pa = new_sea_level;
-                                sea_level_calibrated = true;
-                                Serial.print(F("[SENSOR] Sea level pressure calibrated from GPS: "));
-                                Serial.print(new_sea_level / 100.0f, 1);
-                                Serial.println(F(" hPa"));
-                            } else {
-                                // Exponential moving average (slow adaptation)
-                                calibrated_sea_level_pa = calibrated_sea_level_pa * 0.95f + new_sea_level * 0.05f;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Calculate altitude using calibrated sea level pressure
-            sensor_altitude_m = bmp180.readAltitude(calibrated_sea_level_pa);
-
-            // If SHT30 is not available, use BMP180 temperature
-            if (!SENSOR_SHT30_ENABLED || !sht30_ok) {
-                float tempC = bmp180.readTemperature();
-                sensor_tempF = tempC * 1.8f + 32.0f;
-            }
-        } else {
-            Serial.println(F("[SENSOR] BMP180 read failed"));
-        }
+    // Auto-calibrate barometer using GPS altitude (if valid)
+    if (g_location_valid && gps.altitude.isValid()) {
+        float gps_alt = gps.altitude.meters();
+        sensorManager.calibrateWithGPS(gps_alt);
     }
 }
 
@@ -187,11 +130,11 @@ void buildFullReport(FullReportMsg& report) {
     // Clear the struct
     memset(&report, 0, sizeof(report));
 
-    // Environmental sensors - use real sensor values
-    report.temperatureF_x10 = (int16_t)(sensor_tempF * 10.0f);
-    report.humidity_x10 = (uint16_t)(sensor_humidity * 10.0f);
-    report.pressure_hPa = (uint16_t)sensor_pressure_hPa;
-    report.altitude_m = (int16_t)sensor_altitude_m;
+    // Environmental sensors - use SensorManager cached values
+    report.temperatureF_x10 = (int16_t)(sensorManager.getTemperatureF() * 10.0f);
+    report.humidity_x10 = (uint16_t)(sensorManager.getHumidity() * 10.0f);
+    report.pressure_hPa = (uint16_t)sensorManager.getPressureHPa();
+    report.altitude_m = (int16_t)sensorManager.getAltitudeM();
     
     // GPS data
     if (g_location_valid) {
@@ -217,7 +160,9 @@ void buildFullReport(FullReportMsg& report) {
     report.neighborCount = neighborTable.getActiveCount();
     
     // Flags
-    report.flags |= FLAG_SENSORS_OK;
+    if (sensorManager.hasAnySensor()) {
+        report.flags |= FLAG_SENSORS_OK;
+    }
 
     // Set time source flags based on TDMA scheduler's current time source
     TDMAStatus tdmaStatus = tdmaScheduler.getStatus();
@@ -329,7 +274,7 @@ void transmitQueuedForwards(uint8_t slotEndSecond) {
         // Check if we still have time
         currentSecond = g_second;
         if (currentSecond >= safeEndSecond) {
-            Serial.println(F("⏱️ Slot time ending - stopping forwards"));
+            LOG_INFO_F("Slot time ending - stopping forwards");
             break;
         }
 
@@ -342,13 +287,8 @@ void transmitQueuedForwards(uint8_t slotEndSecond) {
         }
 
         // Transmit the forwarded packet
-        Serial.print(F("🔄 Forwarding queued packet ("));
-        Serial.print(forwardsSent + 1);
-        Serial.print(F("/"));
-        Serial.print(transmitQueue.depth());
-        Serial.print(F(") size="));
-        Serial.print(msg->length);
-        Serial.println(F(" bytes"));
+        LOG_INFO_F("Forwarding queued packet (%d/%d) size=%d bytes",
+                   forwardsSent + 1, transmitQueue.depth(), msg->length);
 
         bool success = sendBinaryMessage(msg->data, msg->length);
 
@@ -356,10 +296,10 @@ void transmitQueuedForwards(uint8_t slotEndSecond) {
             incrementPacketsForwarded();
             DEBUG_TX_F("Forward transmitted | size=%d queue_after=%d",
                       msg->length, transmitQueue.depth() - 1);
-            Serial.println(F("✅ Forward transmitted"));
+            LOG_INFO_F("Forward transmitted successfully");
         } else {
             DEBUG_TX_F("Forward transmission FAILED | size=%d", msg->length);
-            Serial.println(F("❌ Forward failed"));
+            LOG_ERROR_F("Forward transmission failed");
         }
 
         // Remove from queue regardless of success/failure
@@ -371,10 +311,8 @@ void transmitQueuedForwards(uint8_t slotEndSecond) {
     }
 
     if (forwardsSent > 0) {
-        Serial.print(F("📊 Forwarded "));
-        Serial.print(forwardsSent);
-        Serial.print(F(" packet(s) this slot. Queue remaining: "));
-        Serial.println(transmitQueue.depth());
+        LOG_INFO_F("Forwarded %d packet(s) this slot. Queue remaining: %d",
+                   forwardsSent, transmitQueue.depth());
     }
 }
 
@@ -444,7 +382,7 @@ void sendGatewayBeacon() {
         }
         Serial.println(F("─────────────────────────────────────────────────────────────"));
     } else {
-        Serial.println(F("⚠️ Gateway beacon transmission FAILED"));
+        LOG_WARN_F("Gateway beacon transmission FAILED");
     }
 }
 
@@ -490,7 +428,7 @@ void sendPendingBeacon() {
             }
             Serial.println(F("─────────────────────────────────────────────────────────────"));
         } else {
-            Serial.println(F("⚠️ Beacon rebroadcast FAILED"));
+            LOG_WARN_F("Beacon rebroadcast FAILED");
         }
     }
 }
@@ -502,6 +440,9 @@ void sendPendingBeacon() {
 void setup() {
     Serial.begin(115200);
     delay(200);
+
+    // Initialize centralized logging system
+    Logger::getInstance().begin(LOG_LEVEL_INFO);
 
     // Print startup banner
     printStartupBanner();
@@ -543,44 +484,29 @@ void setup() {
     initGPS();
     printRow("GPS Module", "OK - Waiting for fix");
 
-    // Initialize sensor I2C bus and sensors
+    // Initialize sensor subsystem via SensorManager
     printDivider();
     printRow("Sensor I2C Bus", "GPIO" + String(SENSOR_I2C_SDA) + "/GPIO" + String(SENSOR_I2C_SCL));
-    SensorWire.begin(SENSOR_I2C_SDA, SENSOR_I2C_SCL);
 
-    // Initialize SHT30
-    if (SENSOR_SHT30_ENABLED) {
-        sht30_ok = sht30.begin(&SensorWire);
-        if (sht30_ok) {
+    if (sensorManager.begin()) {
+        // Report individual sensor status
+        if (sensorManager.isSHT30Available()) {
             printRow("SHT30 (Temp/Hum)", "OK @ 0x44");
-            // Initial read
-            if (sht30.read()) {
-                sensor_tempF = sht30.getTemperature() * 1.8f + 32.0f;
-                sensor_humidity = sht30.getHumidity();
-            }
-        } else {
+        } else if (SENSOR_SHT30_ENABLED) {
             printRow("SHT30 (Temp/Hum)", "NOT FOUND");
-        }
-    } else {
-        printRow("SHT30 (Temp/Hum)", "Disabled");
-    }
-
-    // Initialize BMP180
-    if (SENSOR_BMP180_ENABLED) {
-        bmp180_ok = bmp180.begin(&SensorWire);
-        if (bmp180_ok) {
-            printRow("BMP180 (Press/Alt)", "OK @ 0x77");
-            // Initial read (uses standard pressure until GPS calibration)
-            float pressure_pa = bmp180.readPressure();
-            if (pressure_pa > 0) {
-                sensor_pressure_hPa = pressure_pa / 100.0f;
-                sensor_altitude_m = bmp180.readAltitude(calibrated_sea_level_pa);
-            }
         } else {
+            printRow("SHT30 (Temp/Hum)", "Disabled");
+        }
+
+        if (sensorManager.isBMP180Available()) {
+            printRow("BMP180 (Press/Alt)", "OK @ 0x77");
+        } else if (SENSOR_BMP180_ENABLED) {
             printRow("BMP180 (Press/Alt)", "NOT FOUND");
+        } else {
+            printRow("BMP180 (Press/Alt)", "Disabled");
         }
     } else {
-        printRow("BMP180 (Press/Alt)", "Disabled");
+        printRow("Sensors", "NONE AVAILABLE");
     }
 
     // Initialize LoRa
@@ -641,6 +567,25 @@ void setup() {
     lastStatsPrint = now;
     lastNeighborPrune = now;
     lastBeaconSent = now;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Initialize MeshContext - Central dependency injection container
+    // ─────────────────────────────────────────────────────────────────────────
+    g_meshContext.scheduler = &tdmaScheduler;
+    g_meshContext.sensors = &sensorManager;
+    g_meshContext.txQueue = &transmitQueue;
+    g_meshContext.neighbors = &neighborTable;
+    g_meshContext.dupCache = &duplicateCache;
+    g_meshContext.deviceId = DEVICE_ID;
+    g_meshContext.isGateway = IS_GATEWAY;
+
+    if (g_meshContext.isValid()) {
+        LOG_INFO_F("MeshContext initialized (deviceId=%d, isGateway=%s)",
+                   g_meshContext.deviceId,
+                   g_meshContext.isGateway ? "true" : "false");
+    } else {
+        LOG_ERROR_F("MeshContext initialization incomplete!");
+    }
 
     // Ready message
     Serial.println();
@@ -748,8 +693,8 @@ void loop() {
         lastGPSStatusPrint = now;
     }
 
-    // Sensor reading (if sensors enabled)
-    if ((SENSOR_SHT30_ENABLED || SENSOR_BMP180_ENABLED) &&
+    // Sensor reading (if sensors available)
+    if (sensorManager.hasAnySensor() &&
         (now - lastSensorRead >= SENSOR_READ_INTERVAL_MS)) {
         readSensors();
         lastSensorRead = now;
@@ -800,19 +745,15 @@ void loop() {
         // Prune expired neighbors
         uint8_t prunedNeighbors = neighborTable.pruneExpired(NEIGHBOR_TIMEOUT_MS);
         if (prunedNeighbors > 0) {
-            Serial.print(F("🗑 Pruned "));
-            Serial.print(prunedNeighbors);
-            Serial.print(F(" expired neighbor(s). Active: "));
-            Serial.println(neighborTable.getActiveCount());
+            LOG_DEBUG_F("Pruned %d expired neighbor(s). Active: %d",
+                        prunedNeighbors, neighborTable.getActiveCount());
         }
 
         // Prune expired duplicate cache entries
         uint8_t prunedDuplicates = duplicateCache.prune();
         if (prunedDuplicates > 0) {
-            Serial.print(F("🧹 Cleaned "));
-            Serial.print(prunedDuplicates);
-            Serial.print(F(" old duplicate entries. Cached: "));
-            Serial.println(duplicateCache.getCount());
+            LOG_DEBUG_F("Cleaned %d old duplicate entries. Cached: %d",
+                        prunedDuplicates, duplicateCache.getCount());
         }
 
         // Prune old queued forwards (older than 1 minute = 60000ms)
@@ -821,10 +762,8 @@ void loop() {
         uint8_t queueDepthAfter = transmitQueue.depth();
 
         if (queueDepthBefore > queueDepthAfter) {
-            Serial.print(F("🗑️ Pruned "));
-            Serial.print(queueDepthBefore - queueDepthAfter);
-            Serial.print(F(" stale forward(s). Queue: "));
-            Serial.println(queueDepthAfter);
+            LOG_DEBUG_F("Pruned %d stale forward(s). Queue: %d",
+                        queueDepthBefore - queueDepthAfter, queueDepthAfter);
         }
 
         // Check memory health

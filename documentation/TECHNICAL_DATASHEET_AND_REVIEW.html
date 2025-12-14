@@ -1,0 +1,622 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Technical Datasheet</title>
+    
+<style>
+    body {
+        font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+        font-size: 16px;
+        line-height: 1.5;
+        word-wrap: break-word;
+        color: #24292e;
+        margin: 0;
+        padding: 2rem;
+        max-width: 1200px; /* Wider for diagrams */
+        margin: 0 auto;
+    }
+    h1, h2, h3, h4, h5, h6 {
+        margin-top: 24px;
+        margin-bottom: 16px;
+        font-weight: 600;
+        line-height: 1.25;
+    }
+    h1 { font-size: 2em; padding-bottom: 0.3em; border-bottom: 1px solid #eaecef; }
+    h2 { font-size: 1.5em; padding-bottom: 0.3em; border-bottom: 1px solid #eaecef; }
+    h3 { font-size: 1.25em; }
+    code {
+        padding: 0.2em 0.4em;
+        margin: 0;
+        font-size: 85%;
+        background-color: rgba(27,31,35,0.05);
+        border-radius: 3px;
+        font-family: "SFMono-Regular",Consolas,"Liberation Mono",Menlo,Courier,monospace;
+    }
+    pre {
+        padding: 16px;
+        overflow: auto;
+        font-size: 85%;
+        line-height: 1.45;
+        background-color: #f6f8fa;
+        border-radius: 3px;
+    }
+    pre code {
+        background-color: transparent;
+        padding: 0;
+    }
+    blockquote {
+        padding: 0 1em;
+        color: #6a737d;
+        border-left: 0.25em solid #dfe2e5;
+        margin: 0;
+    }
+    table {
+        display: block;
+        width: 100%;
+        overflow: auto;
+        border-spacing: 0;
+        border-collapse: collapse;
+    }
+    table tr {
+        background-color: #fff;
+        border-top: 1px solid #c6cbd1;
+    }
+    table tr:nth-child(2n) {
+        background-color: #f6f8fa;
+    }
+    table th, table td {
+        padding: 6px 13px;
+        border: 1px solid #dfe2e5;
+    }
+    hr {
+        height: 0.25em;
+        padding: 0;
+        margin: 24px 0;
+        background-color: #e1e4e8;
+        border: 0;
+    }
+    a {
+        color: #0366d6;
+        text-decoration: none;
+    }
+    a:hover {
+        text-decoration: underline;
+    }
+    .print-button {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 10px 20px;
+        background-color: #0366d6;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        font-weight: bold;
+    }
+    /* Mermaid Centering */
+    .mermaid {
+        display: flex;
+        justify-content: center;
+        margin: 20px 0;
+    }
+    @media print {
+        .print-button { display: none; }
+        body { padding: 0; max-width: 100%; }
+        a { text-decoration: none; color: black; }
+    }
+</style>
+
+    <!-- Mermaid JS -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({ startOnLoad: true });
+    </script>
+</head>
+<body>
+    <button class="print-button" onclick="window.print()">Print to PDF</button>
+    <h1>ESP32 LoRa Mesh Network - Technical Datasheet &amp; System Review</h1>
+<p><strong>Version:</strong> 1.0
+<strong>Date:</strong> 2025-12-13
+<strong>Project:</strong> ESP32-WIP (LoRa Mesh)</p>
+<hr />
+<h2>1. Executive Summary</h2>
+<p>The <strong>ESP32 LoRa Mesh Network</strong> is a decentralized, self-organizing wireless sensor network designed for long-range environmental monitoring in areas without cellular or WiFi infrastructure. It utilizes <strong>LoRa (Long Range)</strong> radio modulation for physical communication and implements a custom <strong>Time Division Multiple Access (TDMA)</strong> protocol synchronized via <strong>GPS</strong> to prevent packet collisions.</p>
+<p>The system features a <strong>gradient-based routing algorithm</strong> that naturally directs data currents toward a central Gateway node, significantly ensuring efficiency compared to traditional mesh flooding.</p>
+<hr />
+<h2>2. Hardware Specifications</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Component</th>
+<th style="text-align: left;">Specification</th>
+<th style="text-align: left;">Function</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>MCU</strong></td>
+<td style="text-align: left;">ESP32-S3 (Heltec WiFi Kit 32 V3)</td>
+<td style="text-align: left;">Core processing, Bluetooth/WiFi stack, OLED control</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Radio</strong></td>
+<td style="text-align: left;">Semtech SX1262 LoRa</td>
+<td style="text-align: left;">915 MHz communication, -135 dBm sensitivity</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>GPS</strong></td>
+<td style="text-align: left;">u-blox NEO-6M</td>
+<td style="text-align: left;">Time synchronization (PPS accuracy) &amp; Geolocation</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Sensors</strong></td>
+<td style="text-align: left;">SHT30 (I2C 0x44)</td>
+<td style="text-align: left;">Temperature (-40 to 125°C) &amp; Humidity (0-100%)</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">BMP180 (I2C 0x77)</td>
+<td style="text-align: left;">Barometric Pressure (300-1100 hPa) &amp; Altitude</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Display</strong></td>
+<td style="text-align: left;">0.96" OLED (SSD1306)</td>
+<td style="text-align: left;">System status, visual debugging, packet counters</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>3. Communication Protocol Architecture</h2>
+<p>The network stack operates on three distinct layers:</p>
+<h3>Layer 1: Physical (LoRa PHY)</h3>
+<ul>
+<li><strong>Frequency:</strong> 915.0 MHz (ISM Band)</li>
+<li><strong>Bandwidth:</strong> 250 kHz</li>
+<li><strong>Spreading Factor:</strong> SF7 (Balanced range/speed)</li>
+<li><strong>Coding Rate:</strong> 4/5</li>
+<li><strong>Sync Word:</strong> 0x12 (Private Network)</li>
+</ul>
+<h3>Layer 2: Mesh MAC (Media Access Control)</h3>
+<p>The MAC layer handles routing, collision avoidance, and packet integrity.</p>
+<h4>Packet Structure (8-Byte Header)</h4>
+<p>Every packet transmitted over the air begins with a strict 8-byte header defined in <code>include/mesh_protocol.h</code>:</p>
+<pre><code class="language-c">struct MeshHeader {
+    uint8_t version;      // Protocol Ver (0x01)
+    uint8_t messageType;  // Enum: REPORT=0x01, BEACON=0x0A, etc.
+    uint8_t sourceId;     // Origin Node ID (Fixed)
+    uint8_t destId;       // Destination Node ID (0x00=Gateway)
+    uint8_t senderId;     // Last Hop Transmitter ID (Changes per hop)
+    uint8_t messageId;    // Rolling Sequence # (0-255)
+    uint8_t ttl;          // Time-To-Live (Starts at 3, decrements)
+    uint8_t flags;        // Bitmask: [0]=ACK_REQ, [1]=FORWARDED
+};
+</code></pre>
+<h4>Message Types</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">ID</th>
+<th style="text-align: left;">Description</th>
+<th style="text-align: left;">Payload Size</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>MSG_FULL_REPORT</code></td>
+<td style="text-align: left;"><code>0x01</code></td>
+<td style="text-align: left;">Full sensor data (Temp, Hum, GPS, Pressure)</td>
+<td style="text-align: left;">32 Bytes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>MSG_BEACON</code></td>
+<td style="text-align: left;"><code>0x0A</code></td>
+<td style="text-align: left;">Routing gradient advertisement + Time Sync</td>
+<td style="text-align: left;">16 Bytes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>MSG_ACK</code></td>
+<td style="text-align: left;"><code>0x03</code></td>
+<td style="text-align: left;">Receipt confirmation</td>
+<td style="text-align: left;">0 Bytes</td>
+</tr>
+</tbody>
+</table>
+<h3>Layer 3: Application &amp; TDMA</h3>
+<p>The application layer manages sensor data acquisition and enforces strict timing.</p>
+<h4>TDMA Scheduler (<code>src/tdma_scheduler.cpp</code>)</h4>
+<p>To prevent "hidden node" collisions, the network divides time into <strong>60-second cycles</strong>.
+*   <strong>Cycle Duration:</strong> 60 Seconds
+*   <strong>Slot Duration:</strong> 12 Seconds per Node
+*   <strong>Active TX Window:</strong> 10 Seconds (2s guard band)
+*   <strong>Capacity:</strong> 5 Nodes (IDs 1-5)</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">Node ID</th>
+<th style="text-align: center;">Start Time (s)</th>
+<th style="text-align: center;">End Time (s)</th>
+<th style="text-align: center;">Primary TX Time (s)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;"><strong>1</strong></td>
+<td style="text-align: center;">00</td>
+<td style="text-align: center;">12</td>
+<td style="text-align: center;">06</td>
+</tr>
+<tr>
+<td style="text-align: center;"><strong>2</strong></td>
+<td style="text-align: center;">12</td>
+<td style="text-align: center;">24</td>
+<td style="text-align: center;">18</td>
+</tr>
+<tr>
+<td style="text-align: center;"><strong>3</strong></td>
+<td style="text-align: center;">24</td>
+<td style="text-align: center;">36</td>
+<td style="text-align: center;">30</td>
+</tr>
+<tr>
+<td style="text-align: center;"><strong>4</strong></td>
+<td style="text-align: center;">36</td>
+<td style="text-align: center;">48</td>
+<td style="text-align: center;">42</td>
+</tr>
+<tr>
+<td style="text-align: center;"><strong>5</strong></td>
+<td style="text-align: center;">48</td>
+<td style="text-align: center;">60</td>
+<td style="text-align: center;">54</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>4. Key Algorithms &amp; Logic</h2>
+<h3>4.1 Gradient Routing (<code>src/gradient_routing.cpp</code>)</h3>
+<p>Unlike simple flooding, this network builds a <strong>"Gradient"</strong> of distance relative to the gateway.
+1.  <strong>Beacon Generation:</strong> Gateway (Node 1) broadcasts a <code>MSG_BEACON</code> with <code>distance=0</code>.
+2.  <strong>Propagation:</strong> Node 2 receives it, records Node 1 as its parent, sets its own <code>distance=1</code>, and rebroadcasts.
+3.  <strong>Route Selection:</strong> Nodes always forward <code>MSG_FULL_REPORT</code> packets to the neighbor with the <strong>lowest distance</strong> to the gateway.
+4.  <strong>Fallback:</strong> If no gradient exists, nodes fall back to controlled flooding.</p>
+<p><strong>Key Function:</strong></p>
+<pre><code class="language-cpp">// include/gradient_routing.h
+uint8_t getNextHop(uint8_t finalDestId); 
+// Returns the NodeID of the best neighbor to forward to.
+</code></pre>
+<h3>4.2 Time Synchronization Strategy</h3>
+<p>A hybrid approach ensures nodes stay synced even if GPS signal is lost.
+1.  <strong>Source A (Primary):</strong> Onboard GPS Module (PPS signal). Accuracy: &lt; 1µs.
+2.  <strong>Source B (Secondary):</strong> Network Time Protocol (NTP) over LoRa.
+    *   The gateway embeds its GPS time into <code>MSG_BEACON</code> payloads.
+    *   Nodes calculate: <code>LocalTime = BeaconTime + (millis() - ReceiveTime)</code>.
+    *   Accuracy: ~100-300ms (sufficient for 2s guard bands).</p>
+<h3>4.3 Duplicate Detection</h3>
+<p>To prevent broadcast storms:
+*   Every node maintains a <code>DuplicateCache</code> (Circular buffer, size 32).
+*   <strong>Signature:</strong> <code>(SourceID, MessageID)</code> pair.
+*   If a received packet matches a signature in the cache, it is immediately dropped.</p>
+<hr />
+<h2>5. Software Configuration (<code>src/config.cpp</code>)</h2>
+<p>Configuration is centralized in <code>src/config.cpp</code> and <code>include/config.h</code>.</p>
+<p><strong>Network Settings:</strong></p>
+<pre><code class="language-cpp">const uint8_t DEVICE_ID = 3;           // CHANGE THIS PER BOARD
+const uint8_t GATEWAY_NODE_ID = 1;     // Fixed Gateway ID
+const bool USE_GRADIENT_ROUTING = true; 
+</code></pre>
+<p><strong>Timing Constants:</strong></p>
+<pre><code class="language-cpp">#define MESH_DEFAULT_TTL 3             // Max hops
+const unsigned long BEACON_INTERVAL_MS = 30000; // 30s Beacon
+</code></pre>
+<p><strong>Sensor Defines:</strong></p>
+<pre><code class="language-cpp">const bool SENSOR_SHT30_ENABLED = true;
+const bool SENSOR_BMP180_ENABLED = true;
+</code></pre>
+<hr />
+<h2>6. Dashboard &amp; Visualization</h2>
+<h3>Gateway Web Interface</h3>
+<ul>
+<li><strong>Hosted on:</strong> ESP32 Gateway (Node 1)</li>
+<li><strong>Access:</strong> WiFi AP <code>LoRa_Mesh</code> (192.168.4.1) or Station IP.</li>
+<li><strong>Tech Stack:</strong> AsyncWebServer (C++), HTML5/JS (Client).</li>
+<li><strong>Features:</strong> Real-time node table, connection lines, RSSI monitor.</li>
+</ul>
+<h3>Desktop Dashboard (<code>desktop_dashboard/</code>)</h3>
+<ul>
+<li><strong>Platform:</strong> Python (PC-side).</li>
+<li><strong>Mechanism:</strong> Reads JSON stream from Gateway via USB Serial.</li>
+<li><strong>Features:</strong><ul>
+<li>Map visualization (Folium/Leaflet).</li>
+<li>Network Topology Graph (Vis.js).</li>
+<li>ThingSpeak Uploader Bridge.</li>
+</ul>
+</li>
+</ul>
+<hr />
+<h2>7. Future Improvements &amp; Errata</h2>
+<ul>
+<li><strong>Battery Monitoring:</strong> Currently hardcoded to 100%. Needs voltage divider implementation on <code>VBAT</code> pin.</li>
+<li><strong>Encryption:</strong> Payload is currently unencrypted. AES-128 is recommended for production.</li>
+<li><strong>Dynamic Slots:</strong> Current TDMA schedule is hardcoded for 5 nodes. A dynamic slot allocation handshake would allow &gt;5 nodes.</li>
+</ul>
+<hr />
+<h2>8. Codebase Reference</h2>
+<p>This section provides a detailed breakdown of every source file in the project, explaining its purpose and key functions.</p>
+<h3>8.1 Core System &amp; Communication</h3>
+<h4><code>src/main.cpp</code></h4>
+<p><strong>Purpose</strong>: The entry point of the firmware. Manages the main FreeRTOS-style loop (even though running on Arduino loop), checking sensors, handling mesh packets, and managing TDMA scheduling.
+<strong>Key Functions</strong>:
+*   <code>setup()</code>: Initializes Serial, I2C, Sensors, LoRa, and WiFi (if enabled). Checks hardware presence.
+*   <code>loop()</code>: The main execution cycle. Calls <code>tdmaScheduler.loop()</code>, checks for incoming LoRa packets, reads sensors when appropriate, and handles serial input.</p>
+<h4><code>src/lora_comm.cpp</code></h4>
+<p><strong>Purpose</strong>: Abstraction layer for the SX1262 LoRa radio.
+<strong>Key Functions</strong>:
+*   <code>initLoRa()</code>: Configures SPI, frequency (915MHz), sync word, and transmit power.
+*   <code>sendBinaryMessage(uint8_t* data, uint8_t len)</code>: Sends a raw byte array over LoRa.
+*   <code>receivePacket(LoRaReceivedPacket &amp;packet)</code>: Reads available data from the radio into a structured packet container.
+*   <code>getRSSI()</code> / <code>getSNR()</code>: Returns the signal quality metrics of the last received packet.</p>
+<h4><code>src/packet_handler.cpp</code></h4>
+<p><strong>Purpose</strong>: Processes incoming raw LoRa packets. Determines if a packet is for this device, a broadcast, or needs forwarding.
+<strong>Key Functions</strong>:
+*   <code>checkForIncomingMessages()</code>: Main polling function. Reads from LoRa and dispatches to appropriate handlers (e.g., routing updates, sensor data).
+*   <code>shouldForward(MeshHeader* header)</code>: Decides if a packet should be rebroadcasted based on TTL and destination.</p>
+<h4><code>src/transmit_queue.cpp</code></h4>
+<p><strong>Purpose</strong>: specialized ring buffer for outgoing messages. Ensures messages are held until the correct TDMA time slot.
+<strong>Key Functions</strong>:
+*   <code>enqueue(uint8_t* data, uint8_t len)</code>: Adds a message to the waiting list.
+*   <code>dequeue()</code>: Returns the next message to send (FIFO).
+*   <code>prune()</code>: Removes old messages that exceeded their validity time.</p>
+<h4><code>src/mesh_commands.cpp</code></h4>
+<p><strong>Purpose</strong>: Handles debug commands via Serial (e.g., "force send", "reset stats") and formats data for printing.
+<strong>Key Functions</strong>:
+*   <code>processMeshCommands()</code>: Parses text input from Serial monitor.
+*   <code>printNeighborTable()</code>: Dumps the current routing table for debugging.</p>
+<h3>8.2 Routing &amp; Mesh Layer</h3>
+<h4><code>src/gradient_routing.cpp</code></h4>
+<p><strong>Purpose</strong>: Implements the gradient routing algorithm. It maintains a "distance to gateway" metric to direct packets efficiently.
+<strong>Key Functions</strong>:
+*   <code>updateRoutingState(senderDist, senderId, ...)</code>: Updates this node's distance based on received beacons.
+*   <code>getNextHop()</code>: Returns the Node ID of the best neighbor to forward packets to (lowest distance to gateway).
+*   <code>sendBeacon()</code>: Broadcasts a routing beacon with current distance and Time Sync info.</p>
+<h4><code>src/neighbor_table.cpp</code></h4>
+<p><strong>Purpose</strong>: Maintains a list of visible neighbors and their signal quality.
+<strong>Key Functions</strong>:
+*   <code>updateNeighbor(nodeId, rssi)</code>: specific neighbor entry update or creation.
+*   <code>getNeighbor(nodeId)</code>: Retrieve stats for a specific neighbor.
+*   <code>pruneStaleNeighbors()</code>: Removes neighbors not heard from in <code>NEIGHBOR_TIMEOUT_MS</code>.</p>
+<h4><code>src/node_store.cpp</code></h4>
+<p><strong>Purpose</strong>: A database of the most recent status report from every node in the mesh.
+<strong>Key Functions</strong>:
+*   <code>updateNode(nodeId, payload)</code>: Stores the latest temperature/humidity/GPS data for a node.
+*   <code>getNodeData(nodeId)</code>: Retrieval for display or dashboard.</p>
+<h4><code>src/duplicate_cache.cpp</code></h4>
+<p><strong>Purpose</strong>: Prevents packet flooding loops. Remembers recent Message IDs and drops them if seen again.
+<strong>Key Functions</strong>:
+*   <code>isDuplicate(senderId, msgId)</code>: Checks the cache.
+*   <code>add(senderId, msgId)</code>: Adds a new signature to the cache.</p>
+<h3>8.3 Timing &amp; GPS</h3>
+<h4><code>src/tdma_scheduler.cpp</code></h4>
+<p><strong>Purpose</strong>: The heart of the collision avoidance system. Manages time slots.
+<strong>Key Functions</strong>:
+*   <code>updateWithFallback(gpsTime, valid)</code>: Syncs internal clock to GPS if available, otherwise runs on internal millis().
+*   <code>shouldTransmitNow()</code>: Returns <code>true</code> if the current second matches the device's assigned slot.
+*   <code>getSlotStart()</code> / <code>getSlotEnd()</code>: Returns the timing window for this device.</p>
+<h4><code>src/network_time.cpp</code></h4>
+<p><strong>Purpose</strong>: Handles Time Synchronization propagation over the mesh for nodes without GPS.
+<strong>Key Functions</strong>:
+*   <code>updateNetworkTime(remoteTime)</code>: Adjusts local clock based on a received beacon's timestamp (compensating for hop flight time).
+*   <code>getEpochTime()</code>: Returns the synchronized network time.</p>
+<h4><code>src/neo6m.cpp</code></h4>
+<p><strong>Purpose</strong>: Driver for the U-Blox NEO-6M GPS module.
+<strong>Key Functions</strong>:
+*   <code>processGPSData()</code>: Feeds serial data to the TinyGPS++ library.
+*   <code>getGPSHour()</code>, <code>getGPSMinute()</code>: Accessors for time data.
+*   <code>hasFix()</code>: Returns <code>true</code> if location data is valid.</p>
+<h3>8.4 Sensors &amp; Peripherals</h3>
+<h4><code>src/sht30.cpp</code></h4>
+<p><strong>Purpose</strong>: Driver for the SHT30 I2C temperature and humidity sensor.
+<strong>Key Functions</strong>:
+*   <code>read()</code>: Triggers a measurement.
+*   <code>getTemperatureF()</code>: Returns temp in Fahrenheit.</p>
+<h4><code>src/bmp180.cpp</code></h4>
+<p><strong>Purpose</strong>: Driver for the BMP180 I2C pressure sensor.
+<strong>Key Functions</strong>:
+*   <code>readPressure()</code>: Returns atmospheric pressure in Pascals.
+*   <code>readAltitude(seaLevelPressure)</code>: Calculates altitude.</p>
+<h4><code>src/OLED.cpp</code> &amp; <code>src/display_manager.cpp</code></h4>
+<p><strong>Purpose</strong>: Manages the SSD1306 OLED display. <code>display_manager</code> is a high-level wrapper logic (screens, state), <code>OLED</code> is the low-level driver.
+<strong>Key Functions</strong>:
+*   <code>updateDisplay()</code>: Refreshes the screen content based on current state (Waiting, Sending, Received).
+*   <code>drawBitmap()</code>: Used for icons.</p>
+<h4><code>src/config.cpp</code></h4>
+<p><strong>Purpose</strong>: Global configuration file.
+<strong>Key Variables</strong>:
+*   <code>DEVICE_ID</code>: The unique hardcoded ID of the node.
+*   <code>WIFI_ENABLED</code>: Hardware feature flag.</p>
+<h3>8.5 Web &amp; Desktop Dashboard</h3>
+<h4><code>src/web_dashboard.cpp</code></h4>
+<p><strong>Purpose</strong>: Hosts a web server on the Gateway node to view data in a browser directly from the ESP32.
+<strong>Key Functions</strong>:
+*   <code>initWebDashboard()</code>: Starts the SoftAP or connects to WiFi.
+*   <code>handleRoot()</code>: Serves the embedded HTML page.
+*   <code>generateJSON()</code>: Returns current system state as JSON for the frontend.</p>
+<h4><code>desktop_dashboard/serial_bridge.py</code></h4>
+<p><strong>Purpose</strong>: PC-side Python script that bridges the ESP32 Serial output to a local web server/WebSocket.
+<strong>Key Functions</strong>:
+*   <code>read_serial()</code>: Async loop reading lines from COM port.
+*   <code>process_mesh_data()</code>: Parses JSON lines from ESP32.
+*   <code>broadcast_update()</code>: Pushes new data to connected WebSocket clients (the browser).
+*   <code>upload_to_thingspeak()</code>: Forwards data to the cloud.</p>
+<h4><code>desktop_dashboard/dashboard.html</code></h4>
+<p><strong>Purpose</strong>: The frontend interface for the desktop dashboard.
+<strong>Key Components</strong>:
+*   <code>Leaflet Map</code>: Visualizes node locations.
+*   <code>Vis.js Graph</code>: Renders the network topology (who connects to whom).
+*   <code>WebSocket</code>: Connects to <code>serial_bridge.py</code> for live updates without page refresh.</p>
+<hr />
+<h2>9. System Architecture (UML)</h2>
+<p>The following Class Diagram illustrates the relationships and modular structure of the entire <code>src/</code> directory.</p>
+<div class="mermaid">
+classDiagram
+    %% Core System
+    class Main {
+        +setup()
+        +loop()
+    }
+    class Config {
+        +DEVICE_ID
+        +WIFI_ENABLED
+        +init()
+    }
+    class MemoryMonitor {
+        +printReport()
+        +checkHealth()
+    }
+
+    %% Communication Layer
+    namespace Communication {
+        class LoRaComm {
+            +initLoRa()
+            +sendBinaryMessage()
+            +receivePacket()
+            +getRSSI()
+        }
+        class PacketHandler {
+            +checkForIncomingMessages()
+            +shouldForward()
+            +handleSensorData()
+        }
+        class TransmitQueue {
+            +enqueue()
+            +dequeue()
+            +prune()
+        }
+        class MeshCommands {
+            +processMeshCommands()
+        }
+    }
+
+    %% Routing Layer
+    namespace Routing {
+        class GradientRouting {
+            +updateRoutingState()
+            +getNextHop()
+            +sendBeacon()
+        }
+        class NeighborTable {
+            +updateNeighbor()
+            +getNeighbor()
+            +pruneStaleNeighbors()
+        }
+        class NodeStore {
+            +updateNode()
+            +getNodeData()
+        }
+        class DuplicateCache {
+            +isDuplicate()
+            +add()
+        }
+    }
+
+    %% Timing & GPS
+    namespace Timing_GPS {
+        class TDMAScheduler {
+            +updateWithFallback()
+            +shouldTransmitNow()
+        }
+        class NetworkTime {
+            +updateNetworkTime()
+            +getEpochTime()
+        }
+        class Neo6m_GPS {
+            +processGPSData()
+            +getGPSHour()
+            +hasFix()
+        }
+    }
+
+    %% Sensors & Peripherals
+    namespace Sensors_Peripherals {
+        class SHT30 {
+            +read()
+            +getTemperatureF()
+        }
+        class BMP180 {
+            +readPressure()
+            +readAltitude()
+        }
+        class OLED_Driver {
+            +drawBitmap()
+            +drawString()
+        }
+        class DisplayManager {
+            +updateDisplay()
+            +showSplash()
+        }
+    }
+
+    %% Statistics & Output
+    namespace Stats_Output {
+        class MeshStats {
+            +logPacketReceived()
+            +logPacketSent()
+        }
+        class SerialOutput {
+            +printNetworkStatus()
+        }
+        class SerialJSON {
+            +printNodeData()
+            +printMeshStats()
+        }
+    }
+
+    %% Web Integration
+    namespace Web_Desktop {
+        class WebDashboard {
+            +initWebDashboard()
+            +handleRoot()
+        }
+        class ThingSpeak {
+            +initThingSpeak()
+            +sendToThingSpeak()
+        }
+    }
+
+    %% Relationships
+    Main --> Config : uses
+    Main --> MemoryMonitor : monitors
+    Main --> PacketHandler : polls
+    Main --> TDMAScheduler : drives
+
+    PacketHandler --> LoRaComm : uses
+    PacketHandler --> GradientRouting : consults
+    PacketHandler --> DuplicateCache : checks
+    PacketHandler --> TransmitQueue : queues
+
+    GradientRouting --> NeighborTable : maintains
+    GradientRouting --> LoRaComm : sends beacons
+
+    TDMAScheduler --> Neo6m_GPS : syncs
+    TDMAScheduler --> NetworkTime : fallbacks
+
+    DisplayManager --> OLED_Driver : controls
+    DisplayManager --> NodeStore : reads data
+
+    WebDashboard --> NodeStore : serves data
+    WebDashboard --> MeshStats : serves stats
+
+    PacketHandler --> MeshStats : updates
+    PacketHandler --> SerialOutput : logs
+    PacketHandler --> SerialJSON : bridges
+
+    Main --> ThingSpeak : uploads
+</div>
+
+<hr />
+<p><em>Generated by Antigravity AI - 2025</em></p>
+</body>
+</html>
